@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "73761905325",
+    "project_id": "app-tbk-3a077",
+    "storage_bucket": "app-tbk-3a077.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:73761905325:android:3a5882bcd0b655945ec424",
+        "android_client_info": {
+          "package_name": "com.example.app_tbk"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBo1emgmzYTujE6mg6meIT-nB26Vr9g9o0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
