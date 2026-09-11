@@ -7,31 +7,56 @@ jobs:
   build-ios:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: subosito/flutter-action@v2
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
 
       - name: Install dependencies
         run: |
-          cd app_tbk
+          if [ -d "app_tbk" ]; then cd app_tbk; fi
           flutter pub get
 
-      - name: Build iOS unsigned
+      - name: Install CocoaPods dependencies
         run: |
-          cd app_tbk
-          flutter build ios --release --no-codesign
+          if [ -d "app_tbk" ]; then cd app_tbk; fi
+          cd ios
+          pod install --repo-update
+
+      - name: Build iOS App with xcodebuild (Unsigned)
+        run: |
+          if [ -d "app_tbk" ]; then cd app_tbk; fi
+          xcodebuild -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
 
       - name: Package Payload to IPA
         run: |
-          cd app_tbk
+          if [ -d "app_tbk" ]; then cd app_tbk; fi
           mkdir -p Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
-          zip -r ../app-release.ipa Payload
-        
+          cp -R build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app Payload/
+          zip -r -9 app-release.ipa Payload
+
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: app-release.ipa
+          path: '**/app-release.ipa'
