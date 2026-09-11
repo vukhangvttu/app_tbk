@@ -1,44 +1,35 @@
 name: Build iOS IPA
 
 on:
-  workflow_dispatch: # Cho phép bấm nút build thủ công trên GitHub
+  workflow_dispatch:
 
 jobs:
   build-ios:
     runs-on: macos-14
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
 
       - name: Install dependencies
-        run: flutter pub get
-
-      - name: Install CocoaPods dependencies
         run: |
-          cd ios
-          pod install --repo-update
+          cd app_tbk
+          flutter pub get
 
-      - name: Build iOS App (Unsigned Release)
-        run: flutter build ios --release --no-codesign
+      - name: Build iOS unsigned
+        run: |
+          cd app_tbk
+          flutter build ios --release --no-codesign
 
       - name: Package Payload to IPA
         run: |
+          cd app_tbk
           mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -r -9 app-release.ipa Payload
-
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -r ../app-release.ipa Payload
+        
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
