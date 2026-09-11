@@ -69,6 +69,8 @@
     "title": "Profile",
     "title_1": "Personal information",
     "student_info": "Student Information",
+    "ngaysinh": "date of birth",
+    "gender": "gender",
     "mssv": "Student ID",
     "email": "Email",
     "phone": "Phone number",

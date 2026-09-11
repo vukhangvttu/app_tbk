@@ -171,7 +171,7 @@ class ApiException implements Exception {
 class ApiService {
 
   // Lấy headers với token
-  static Future<Map<String, String>> _getHeaders() async {
+   static Future<Map<String, String>> _getHeaders() async {
     final token = await AuthService.getToken();
     if (token == null || token.isEmpty) {
       throw Exception('Không tìm thấy token. Vui lòng đăng nhập lại.');
@@ -189,6 +189,40 @@ class ApiService {
     AuthService.logout();
     throw Exception('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
   }
+
+   /// Lấy thời khóa biểu - Tự động refresh token khi hết hạn
+   static Future<List<dynamic>> getThoiKhoaBieu({
+     required String idSinhVien,
+     required int hocKy,
+     required String namHoc,
+   }) async {
+     try {
+       final response = await AuthService.authenticatedRequestLichSinhVien(
+         method: 'POST',
+         endpoint: '/thoi-khoa-bieu',
+         body: {
+           'id_sinh_vien': idSinhVien,
+           'hoc_ky': hocKy,
+           'nam_hoc': namHoc,
+         }
+       );
+
+       if (response?.statusCode == 200) {
+         final data = jsonDecode(response!.body);
+
+         if (data['success'] == true) {
+           return data['data'] ?? [];
+         } else {
+           throw Exception('Lỗi: ${data['error'] ?? 'Unknown error'}');
+         }
+       } else {
+         throw Exception('Lỗi server: ${response?.statusCode}');
+       }
+     } catch (e) {
+       print('❌ Lỗi lấy thời khóa biểu: $e');
+       rethrow;
+     }
+   }
 
   static Future<List<dynamic>> getSchedule(
       int idSinhVien,

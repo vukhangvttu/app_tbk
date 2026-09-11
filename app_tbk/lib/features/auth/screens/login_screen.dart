@@ -1,5 +1,10 @@
+import 'dart:io';
+
+import 'package:app_tbk/config/api_constants.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:app_tbk/features/auth/controllers/login_controller.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
@@ -7,7 +12,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:app_tbk/screens/main_screen.dart';
 import 'package:get/get.dart' hide Trans;
-import 'package:app_tbk/main.dart';
+import '../../../security_checker_service.dart';
+import '../services/auth_service.dart';
+import '../services/post_login_initializer.dart';
+import 'forgotpassword/forgot_password_screen.dart';
+import 'register_screen.dart'; // ✅ IMPORT REGISTER SCREEN
+import 'package:google_sign_in/google_sign_in.dart';
 
 class LoginScreen extends StatefulWidget {
   final Function(ThemeMode)? onThemeChanged;
@@ -41,6 +51,14 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _initBiometric();
+    // Thực hiện kiểm tra bảo mật trước
+    // WidgetsBinding.instance.addPostFrameCallback((_) async {
+    //    await _performSecurityCheck(); // kiểm tra root / mock location, v.v.
+    //   if (mounted && _isSecure) {
+    //     // Chỉ khởi tạo sinh trắc học khi thiết bị an toàn
+    //     await _initBiometric();
+    //   }
+    // });
   }
 
   @override
@@ -51,24 +69,86 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: ['email', 'profile'],
+    serverClientId: ApiConstants.googleServerClientId,
+  );
+
+  bool _isGoogleLoading = false;
+
+  Future<void> _handleGoogleLogin() async {
+    setState(() => _isGoogleLoading = true);
+    try {
+      final GoogleSignInAccount? account = await _googleSignIn.signIn();
+      if (account == null) {
+        // Người dùng hủy
+        setState(() => _isGoogleLoading = false);
+        return;
+      }
+
+      final GoogleSignInAuthentication auth = await account.authentication;
+      final String? idToken = auth.idToken;
+
+      if (idToken == null) {
+        throw Exception('Không lấy được idToken từ Google');
+      }
+
+      // Gửi idToken lên backend để xác thực + đổi lấy JWT nội bộ
+      final success = await _authController.loginWithGoogle(idToken);
+
+      if (mounted) setState(() => _isGoogleLoading = false);
+
+      if (success) {
+        final mssv = await AuthService.getSavedMssv() ?? '';
+        if (mounted) {
+          PostLoginInitializer.quickInit(
+            context: context,
+            mssv: mssv,
+          );
+          _navigateToMainScreen();
+        }
+      } else {
+        if (mounted) {
+          _showErrorDialog('Đăng nhập Google thất bại. Tài khoản có thể chưa được liên kết.');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isGoogleLoading = false);
+        _showSnackbar('', isError: true);
+      }
+    }
+  }
+
+
+
   // ========== BIOMETRIC FUNCTIONS ==========
 
   Future<void> _initBiometric() async {
     await _checkBiometricSupport();
     await _loadSavedCredentials();
 
-    // ✅ Kiểm tra có thể tự động đăng nhập bằng biometric không
+    // ✅ Kiểm tra token hợp lệ trước khi cho phép đăng nhập sinh trắc học
     if (_biometricEnabled && _canCheckBiometrics) {
-      final canAutoLogin = await _authController.canAutoLoginWithBiometric();
+      final isTokenValid = await _authController.isTokenValid();
 
-      if (canAutoLogin) {
-        // Tự động hiện prompt biometric
+      if (isTokenValid) {
+        // Token còn hạn -> có thể tự động đăng nhập
         await Future.delayed(const Duration(milliseconds: 300));
         _loginWithBiometric();
+      } else {
+        // ✅ Token hết hạn -> tắt biometric và yêu cầu đăng nhập lại
+        debugPrint('❌ Không thể tự động đăng nhập (token hết hạn)');
+        await _authController.disableBiometric();
+        if (mounted) {
+          setState(() {
+            _biometricEnabled = false;
+          });
+        }
       }
     }
   }
-
   Future<void> _checkBiometricSupport() async {
     try {
       bool canCheckBiometrics = await _localAuth.canCheckBiometrics;
@@ -90,7 +170,7 @@ class _LoginScreenState extends State<LoginScreen> {
         });
       }
     } catch (e) {
-      print('❌ Lỗi check biometric: $e');
+      debugPrint('❌ Lỗi check biometric: $e');
     }
   }
 
@@ -102,12 +182,10 @@ class _LoginScreenState extends State<LoginScreen> {
       });
     }
 
-
-      String? savedMssv = await _storage.read(key: 'saved_mssv');
-      if (savedMssv != null && mounted) {
-        _mssvController.text = savedMssv;
-      }
-
+    String? savedMssv = await _storage.read(key: 'saved_mssv');
+    if (savedMssv != null && mounted) {
+      _mssvController.text = savedMssv;
+    }
   }
 
   Future<void> _loginWithBiometric() async {
@@ -120,43 +198,51 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
 
-      if (authenticated && mounted) {
-        setState(() => _isLoading = true);
+      if (!authenticated) {
+        debugPrint('❌ Xác thực sinh trắc học thất bại hoặc bị hủy');
+        return;
+      }
 
-        // ✅ Kiểm tra token còn hạn không
-        final isValid = await _authController.isTokenValid();
+      if (!mounted) return;
 
+      setState(() => _isLoading = true);
+
+      // ✅ Kiểm tra token còn hạn không
+      final isValid = await _authController.isTokenValid();
+
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+
+      if (isValid) {
+        // 🔥 Token còn hạn -> init services và chuyển màn hình
+        // await PostLoginInitializer.initialize().then((_) {
+        //   debugdebugPrint('✅ Post-login services ready (biometric)');
+        // }).catchError((e) {
+        //   debugdebugPrint('❌ Post-login init error: $e');
+        // });
+
+        _navigateToMainScreen();
+      } else {
+        // ❌ Token hết hạn -> tắt biometric
         if (mounted) {
-          setState(() => _isLoading = false);
-        }
+          debugPrint('❌ Token đã hết hạn - Tắt sinh trắc học');
+          await _authController.disableBiometric();
+          setState(() => _biometricEnabled = false);
 
-        if (isValid) {
-          // 🔥 INIT SERVICES SAU KHI BIOMETRIC SUCCESS
-          PostLoginInitializer.initialize().then((_) {
-            debugPrint('✅ Post-login services ready (biometric)');
-          }).catchError((e) {
-            debugPrint('❌ Post-login init error: $e');
-          });
-
-
-          _navigateToMainScreen();
-        } else {
-          if (mounted) {
-            _showErrorSnackbar('Token đã hết hạn. Vui lòng đăng nhập lại.');
-            // ❌ Tắt biometric nếu token hết hạn
-            await _authController.disableBiometric();
-            setState(() => _biometricEnabled = false);
-          }
+          _showSnackbar(
+              'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại bằng mật khẩu.', isError: false
+          );
         }
       }
     } catch (e) {
+      debugPrint('❌ Lỗi đăng nhập sinh trắc học: $e');
       if (mounted) {
         setState(() => _isLoading = false);
-        _showErrorSnackbar('Xác thực thất bại: $e');
+        _showSnackbar('❌ Lỗi đăng nhập sinh trắc học: $e', isError: true);
       }
     }
   }
-
   // ========== LOGIN FUNCTIONS ==========
   Future<void> _handleLogin() async {
     if (_formKey.currentState!.validate()) {
@@ -176,22 +262,25 @@ class _LoginScreenState extends State<LoginScreen> {
 
         if (mounted) {
           if (success) {
-
             // 🔥 INIT FIREBASE + NOTIFICATIONS SAU KHI LOGIN THÀNH CÔNG
-            // ✅ QUAN TRỌNG: Truyền MSSV vào để lưu trước khi init NotificationServices
-            PostLoginInitializer.initialize(context: context, mssv: mssv).then((_) {
-              debugPrint('✅ Post-login services ready');
-            }).catchError((e) {
-              debugPrint('❌ Post-login init error: $e');
-              // App vẫn hoạt động bình thường
-            });
+            // PostLoginInitializer.initialize(context: context, mssv: mssv).then((_) {
+            //   debugdebugPrint('✅ Post-login services ready');
+            // }).catchError((e) {
+            //   debugdebugPrint('❌ Post-login init error: $e');
+            // });
+
+            PostLoginInitializer.quickInit(
+              context: context,
+              mssv: mssv,
+            );
 
             // ✅ Hỏi có muốn bật biometric không (nếu chưa bật)
-            if (_canCheckBiometrics && !_biometricEnabled) {
-              _showEnableBiometricDialog(mssv, password);
-            } else {
-              _navigateToMainScreen();
-            }
+            // if (_canCheckBiometrics && !_biometricEnabled) {
+            //   _showEnableBiometricDialog(mssv, password);
+            // } else {
+            //   _navigateToMainScreen();
+            // }
+            _navigateToMainScreen();
           } else {
             _showErrorDialog('login.error_login'.tr());
           }
@@ -201,12 +290,17 @@ class _LoginScreenState extends State<LoginScreen> {
           setState(() => _isLoading = false);
         }
         if (e is Exception) {
-          if (e.toString().contains('timeout')) {
-            _showErrorDialog('login.time_out'.tr());
-          } else if (e.toString().contains('kết nối')) {
-            _showErrorDialog('login.network'.tr());
+          final errorMsg = e.toString();
+
+          if (errorMsg.contains('401')) {
+            // ❌ Sai thông tin đăng nhập
+            _showErrorDialog('Thông tin đăng nhập không chính xác');
+          } else if (errorMsg.contains('timeout')) {
+            _showErrorDialog('Kết nối máy chủ quá thời gian phản hồi, vui lòng thử lại.');
+          } else if (errorMsg.contains('kết nối') || errorMsg.contains('SocketException')) {
+            _showErrorDialog('Không thể kết nối đến máy chủ, vui lòng kiểm tra mạng.');
           } else {
-            _showErrorDialog('login.unknown: $e'.tr());
+            _showErrorDialog('Lỗi không xác định: $errorMsg');
           }
         }
       }
@@ -239,17 +333,17 @@ class _LoginScreenState extends State<LoginScreen> {
           setState(() {
             _biometricEnabled = true;
           });
-          _showSuccessSnackbar('Đã bật đăng nhập bằng $_biometricType');
+          _showSnackbar('', isError: false);
         } else {
           if (mounted) {
-            _showErrorSnackbar('Không thể bật $_biometricType');
+            _showSnackbar('', isError: true);
           }
         }
       }
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showErrorSnackbar('Lỗi bật $_biometricType: $e');
+        _showSnackbar('', isError: true);
       }
     }
   }
@@ -257,45 +351,272 @@ class _LoginScreenState extends State<LoginScreen> {
   void _showEnableBiometricDialog(String mssv, String password) {
     if (!mounted) return;
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        icon: Icon(
-          _getBiometricIcon(),
-          color: const Color(0xFF6366F1),
-          size: 64,
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
         ),
-        title: Text('Bật đăng nhập bằng $_biometricType?'),
-        content: Text(
-          'Bạn có muốn sử dụng $_biometricType để đăng nhập nhanh hơn trong lần sau không?\n\n'
-              'Khi bật, bạn sẽ không cần nhập mật khẩu trong vòng 30 ngày.',
-          textAlign: TextAlign.center,
+        contentPadding: EdgeInsets.zero,
+        content: Container(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 🎨 Header gradient
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFF6366F1),
+                      const Color(0xFF8B5CF6),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        _getBiometricIcon(),
+                        color: Colors.white,
+                        size: 48,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Bật đăng nhập nhanh',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Sử dụng $_biometricType',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.white.withOpacity(0.9),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 📝 Content
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Lợi ích khi bật:',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    _buildBenefitItem(
+                      isDark,
+                      Icons.flash_on,
+                      'Đăng nhập nhanh chóng',
+                      'Không cần nhập mật khẩu mỗi lần',
+                    ),
+                    const SizedBox(height: 10),
+
+                    _buildBenefitItem(
+                      isDark,
+                      Icons.security,
+                      'An toàn tuyệt đối',
+                      'Dữ liệu được mã hóa bảo mật',
+                    ),
+                    const SizedBox(height: 10),
+
+                    _buildBenefitItem(
+                      isDark,
+                      Icons.timer,
+                      'Hiệu lực 30 ngày',
+                      'Tự động đăng nhập trong 30 ngày',
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.blue[900]?.withOpacity(0.2)
+                            : Colors.blue[50],
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.blue[700]!.withOpacity(0.3)
+                              : Colors.blue[200]!,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.info_outline,
+                            size: 20,
+                            color: isDark ? Colors.blue[300] : Colors.blue[700],
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Bạn có thể tắt tính năng này bất cứ lúc nào trong Cài đặt',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark ? Colors.blue[200] : Colors.blue[800],
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 🔘 Buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _navigateToMainScreen();
+                        },
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          side: BorderSide(
+                            color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
+                          ),
+                        ),
+                        child: Text(
+                          'Bỏ qua',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.grey[300] : Colors.grey[700],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await _enableBiometric(mssv, password);
+                          _navigateToMainScreen();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          backgroundColor: const Color(0xFF6366F1),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(_getBiometricIcon(), size: 20),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'Bật ngay',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _navigateToMainScreen();
-            },
-            child: const Text('Bỏ qua'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _enableBiometric(mssv, password);
-              _navigateToMainScreen();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6366F1),
-            ),
-            child: const Text('Bật ngay'),
-          ),
-        ],
       ),
     );
   }
 
+  Widget _buildBenefitItem(bool isDark, IconData icon, String title, String subtitle) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF6366F1).withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            icon,
+            size: 20,
+            color: const Color(0xFF6366F1),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isDark ? Colors.grey[400] : Colors.grey[600],
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
   Future<void> _navigateToMainScreen() async {
     if (!mounted) return;
 
@@ -307,14 +628,11 @@ class _LoginScreenState extends State<LoginScreen> {
     );
 
     if (!mounted) return;
-
-    // Đợi services ready (hoặc timeout sau 3s)
-    await PostLoginInitializer.initialize()
-        .timeout(const Duration(seconds: 3))
-        .catchError((e) {
-      debugPrint('⚠️ Post-login init timeout or error: $e');
-      // Continue anyway
-    });
+    // await PostLoginInitializer.initialize()
+    //     .timeout(const Duration(seconds: 3))
+    //     .catchError((e) {
+    //   debugdebugPrint('⚠️ Post-login init timeout or error: $e');
+    // });
 
     Navigator.pushReplacement(
       context,
@@ -352,40 +670,25 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  void _showSuccessSnackbar(String message) {
+  void _showSnackbar(String message, {required bool isError}) {
     if (!mounted) return;
-
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
-            const Icon(Icons.check_circle, color: Colors.white),
+            Icon(isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+                color: Colors.white),
             const SizedBox(width: 12),
-            Expanded(child: Text(message)),
+            Expanded(child: Text(message, style: const TextStyle(color: Colors.white))),
           ],
         ),
-        backgroundColor: Colors.green,
+        backgroundColor: isError ? const Color(0xFFE53935) : const Color(0xFF43A047),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
-  }
-
-  void _showErrorSnackbar(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.error, color: Colors.white),
-            const SizedBox(width: 12),
-            Expanded(child: Text(message)),
-          ],
-        ),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        elevation: 6,
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        duration: Duration(seconds: isError ? 4 : 2),
       ),
     );
   }
@@ -499,10 +802,15 @@ class _LoginScreenState extends State<LoginScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         _buildHeader(isDark, size),
-                        const SizedBox(height: 32),
+                        const SizedBox(height: 12),
                         _buildLoginForm(theme, isDark, size),
-                        const SizedBox(height: 24),
-                        _buildBiometricSection(theme, isDark),
+                        _buildGoogleLoginSection(theme, isDark),
+                        const SizedBox(height: 12),
+                        // _buildRegisterLink(isDark), // ✅ THÊM NÚT ĐĂNG KÝ
+                        // const SizedBox(height: 1),
+                        // _buildBiometricSection(theme, isDark),
+
+
                       ],
                     ),
                   ),
@@ -599,6 +907,7 @@ class _LoginScreenState extends State<LoginScreen> {
             TextFormField(
               controller: _mssvController,
               keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               textInputAction: TextInputAction.next,
               style: const TextStyle(fontSize: 16),
               decoration: InputDecoration(
@@ -719,9 +1028,37 @@ class _LoginScreenState extends State<LoginScreen> {
               },
             ),
 
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
 
-            // ❌ BỎ CHECKBOX "REMEMBER ME"
+            // ✅ THÊM NÚT QUÊN MẬT KHẨU
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ForgotPasswordScreen(),
+                    ),
+                  );
+                },
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  'Quên mật khẩu?',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.lightBlue[300] : const Color(0xFF6366F1),
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 12),
 
             SizedBox(
               height: 52,
@@ -890,6 +1227,109 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildGoogleLoginSection(ThemeData theme, bool isDark) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(child: Divider(color: isDark ? Colors.grey[800] : Colors.grey[300])),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Hoặc',
+                style: TextStyle(
+                  color: isDark ? Colors.grey[500] : Colors.grey[600],
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Expanded(child: Divider(color: isDark ? Colors.grey[800] : Colors.grey[300])),
+          ],
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 52,
+          child: OutlinedButton(
+            onPressed: _isGoogleLoading ? null : _handleGoogleLogin,
+            style: OutlinedButton.styleFrom(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              side: BorderSide(
+                color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
+              ),
+            ),
+            child: _isGoogleLoading
+                ? const SizedBox(
+              height: 20,
+              width: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+                : Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Image.network(
+                  'https://www.google.com/favicon.ico',
+                  height: 20,
+                  width: 20,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.g_mobiledata, size: 24),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Đăng nhập Email sinh viên',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ✅ THÊM WIDGET NÚT ĐĂNG KÝ
+  Widget _buildRegisterLink(bool isDark) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          'Chưa có tài khoản? ',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? Colors.grey[400] : Colors.grey[600],
+          ),
+        ),
+        TextButton(
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const RegisterScreen(),
+              ),
+            );
+          },
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+          child: Text(
+            'Đăng ký ngay',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: isDark ? Colors.lightBlue[300] : const Color(0xFF6366F1),
+            ),
+          ),
+        ),
       ],
     );
   }

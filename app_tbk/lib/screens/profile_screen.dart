@@ -613,10 +613,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           title: 'Thông báo',
           subtitle: 'Quản lý thông báo',
           onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const NotificationSettingsScreen()),
-            );
+            // Navigator.push(
+            //   context,
+            //   MaterialPageRoute(builder: (context) => const NotificationSettingsScreen()),
+            // );
           },
           isDark: isDark,
           trailing: Icon(

@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "com.example.app_tbk"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = "27.0.12077973" // ✅ Dùng NDK mới theo yêu cầu plugin
 
     defaultConfig {
@@ -18,23 +18,41 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
+        externalNativeBuild {
+            cmake {
+                arguments("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+                cppFlags("-Wl,-z,max-page-size=16384")
+            }
+        }
     }
 
-    // ✅ Bật Java 8+ và desugaring
+    // ✅ Bật Java 17+ và desugaring
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildTypes {
         getByName("release") {
-            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            isDebuggable = false
         }
+        getByName("debug") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            isDebuggable = true
+        }
+
     }
 }
 

@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
+import 'package:app_tbk/features/auth/services/auth_service.dart';
+import 'package:app_tbk/features/notification-setting/models/notification.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,91 +19,6 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   print('📱 Background Message: ${message.messageId}');
 }
 
-class AppNotificationSettings {
-  final bool enabled;
-  final bool scheduleEnabled;
-  final int scheduleHour;
-  final int scheduleMinute;
-  final bool examEnabled;
-  final int examHour;
-  final int examMinute;
-  final int reminderMinutes;
-  final int examReminderDays;
-  final bool isDefaultSettings; // Thêm flag để đánh dấu là settings mặc định
-
-  AppNotificationSettings({
-    required this.enabled,
-    required this.scheduleEnabled,
-    required this.scheduleHour,
-    required this.scheduleMinute,
-    required this.examEnabled,
-    required this.examHour,
-    required this.examMinute,
-    required this.reminderMinutes,
-    required this.examReminderDays,
-    this.isDefaultSettings = false,
-  });
-
-  String get scheduleTimeString =>
-      '${scheduleHour.toString().padLeft(2, '0')}:${scheduleMinute.toString().padLeft(2, '0')}';
-  String get examTimeString =>
-      '${examHour.toString().padLeft(2, '0')}:${examMinute.toString().padLeft(2, '0')}';
-
-  AppNotificationSettings copyWith({
-    bool? enabled,
-    bool? scheduleEnabled,
-    int? scheduleHour,
-    int? scheduleMinute,
-    bool? examEnabled,
-    int? examHour,
-    int? examMinute,
-    int? reminderMinutes,
-    int? examReminderDays,
-    bool? isDefaultSettings,
-  }) {
-    return AppNotificationSettings(
-      enabled: enabled ?? this.enabled,
-      scheduleEnabled: scheduleEnabled ?? this.scheduleEnabled,
-      scheduleHour: scheduleHour ?? this.scheduleHour,
-      scheduleMinute: scheduleMinute ?? this.scheduleMinute,
-      examEnabled: examEnabled ?? this.examEnabled,
-      examHour: examHour ?? this.examHour,
-      examMinute: examMinute ?? this.examMinute,
-      reminderMinutes: reminderMinutes ?? this.reminderMinutes,
-      examReminderDays: examReminderDays ?? this.examReminderDays,
-      isDefaultSettings: isDefaultSettings ?? this.isDefaultSettings,
-    );
-  }
-
-  factory AppNotificationSettings.fromJson(Map<String, dynamic> json, {bool isDefault = false}) {
-    return AppNotificationSettings(
-      enabled: json['enabled'] ?? false,
-      scheduleEnabled: json['scheduleEnabled'] ?? true,
-      scheduleHour: json['scheduleHour'] ?? 8,
-      scheduleMinute: json['scheduleMinute'] ?? 30,
-      examEnabled: json['examEnabled'] ?? true,
-      examHour: json['examHour'] ?? 6,
-      examMinute: json['examMinute'] ?? 0,
-      reminderMinutes: json['reminderMinutes'] ?? 30,
-      examReminderDays: json['examReminderDays'] ?? 3,
-      isDefaultSettings: isDefault,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'enabled': enabled,
-      'scheduleEnabled': scheduleEnabled,
-      'scheduleHour': scheduleHour,
-      'scheduleMinute': scheduleMinute,
-      'examEnabled': examEnabled,
-      'examHour': examHour,
-      'examMinute': examMinute,
-      'reminderMinutes': reminderMinutes,
-      'examReminderDays': examReminderDays,
-    };
-  }
-}
 
 class SmartNotificationService {
   static final SmartNotificationService _instance = SmartNotificationService._internal();
@@ -130,81 +48,118 @@ class SmartNotificationService {
     isDefaultSettings: true,
   );
 
-  Future<AppNotificationSettings> getSettings({String mssv = '7231620971'}) async {
+  Future<AppNotificationSettings?> getSettings(String mssv) async {
     try {
-      final response = await http.get(
-        Uri.parse('http://192.168.1.120:8080/notification-service/api/users/get-settings/$mssv'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(
-        const Duration(seconds: 15),
-        onTimeout: () {
-          throw TimeoutException('Request to get settings timed out');
-        },
+      // Sử dụng mssv được truyền vào thay vì lấy lại từ AuthService
+      if (mssv.isEmpty) {
+        debugPrint('ProfileService: MSSV không hợp lệ');
+        return null;
+      }
+
+      final response = await AuthService.authenticatedRequestNotification(
+        method: 'GET',
+        endpoint: '/users/get-settings/$mssv',
       );
 
-      print('🔍 API get-settings response: ${response.statusCode} - ${response.body}');
-
-      if (response.statusCode == 200) {
-        final jsonResponse = jsonDecode(response.body) as Map<String, dynamic>;
-
-        final bool success = jsonResponse['success'] ?? false;
-        final dynamic data = jsonResponse['data'];
-
-        if (success && data != null) {
-          print('✅ User has saved settings from server');
-          return AppNotificationSettings.fromJson(data, isDefault: false);
-        } else {
-          // API trả về success=false hoặc không có data
-          print('⚠️ No user settings found, using default (disabled)');
-          return defaultSettings;
-        }
-      } else {
-        // Các lỗi HTTP khác
-        print('⚠️ API error: ${response.statusCode}, using default (disabled)');
-        return defaultSettings;
+      // Kiểm tra response có null không
+      if (response == null) {
+        debugPrint('ProfileService: Không nhận được phản hồi từ server');
+        return null;
       }
+
+      // Parse JSON an toàn
+      final Map<String, dynamic> jsonMap = jsonDecode(response.body);
+
+      // Kiểm tra success
+      final bool success = jsonMap['success'] == true;
+      if (!success) {
+        final message = jsonMap['message'] ?? 'Lấy cài đặt thất bại';
+        debugPrint('ProfileService: $message');
+        return null;
+      }
+
+      // Lấy data
+      final dynamic data = jsonMap['data'];
+      if (data == null || data is! Map<String, dynamic>) {
+        debugPrint('ProfileService: Dữ liệu data không hợp lệ hoặc rỗng');
+        return null;
+      }
+
+      // Parse thành NotificationSettings
+      return AppNotificationSettings.fromJson(data);
+
     } catch (e) {
-      print('❌ Error fetching settings: $e, using default (disabled)');
-      return defaultSettings;
+      debugPrint('ProfileService.fetchProfile Error: $e');
+      // Không throw nữa → trả về null để UI xử lý gracefully
+      return null;
     }
   }
 
-
-  Future<void> saveSettings(AppNotificationSettings settings, {String mssv = '7231620971'}) async {
+  /// Lưu cài đặt thông báo – đồng nhất với toàn bộ dự án
+  static Future<void> saveSettings(AppNotificationSettings settings) async {
     try {
-      // Lưu cục bộ
+      // 1. Lấy MSSV hiện tại (đã lưu khi login)
+      final mssv = await AuthService.getSavedMssv();
+      if (mssv == null || mssv.isEmpty) {
+        throw Exception('Không tìm thấy MSSV của người dùng');
+      }
+
+      // 2. Lưu cục bộ trước (offline-first)
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('notification_settings', jsonEncode(settings.toJson()));
-      print('💾 Saved settings locally: ${settings.toJson()}');
+      debugPrint('NotificationService: Đã lưu cài đặt cục bộ');
 
-      // Gửi tới API
-      final settingsData = settings.toJson();
-      settingsData['mssv'] = mssv;
+      // 3. Chuẩn bị dữ liệu gửi lên server
+      final Map<String, dynamic> payload = settings.toJson();
+      payload['mssv'] = mssv; // backend yêu cầu trường mssv
 
-      final response = await http.put(
-        Uri.parse('http://192.168.0.9:8080/notification-service/api/users/$mssv/settings'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(settingsData),
+      debugPrint('NotificationService: Đang gửi cài đặt lên server cho MSSV: $mssv');
+
+      // 4. Gọi API bằng AuthService (tự động thêm token, baseURL, retry, v.v.)
+      final response = await AuthService.authenticatedRequestNotification(
+        method: 'PUT',
+        endpoint: '/users/$mssv/settings', // Đúng route bạn đang dùng
+        body: jsonEncode(payload),
       ).timeout(
         const Duration(seconds: 15),
         onTimeout: () {
-          throw TimeoutException('Request to save settings timed out');
+          throw TimeoutException('Lưu cài đặt thông báo quá thời gian chờ');
         },
       );
 
-      print('🔍 API save-settings response: ${response.statusCode} - ${response.body}');
-
-      if (response.statusCode != 200) {
-        throw Exception('Failed to save settings to server: ${response.statusCode} - ${response.body}');
+      // 5. Kiểm tra response
+      if (response == null) {
+        debugPrint('NotificationService: Không nhận được phản hồi từ server');
+        // Vẫn coi là thành công cục bộ → không rethrow để tránh làm hỏng UI
+        return;
       }
 
-      print('✅ Settings saved successfully to server');
+      debugPrint('NotificationService: Save response ${response.statusCode} - ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final jsonResponse = jsonDecode(response.body) as Map<String, dynamic>;
+        final success = jsonResponse['success'] == true;
+
+        if (success) {
+          debugPrint('NotificationService: Lưu cài đặt lên server thành công');
+        } else {
+          final msg = jsonResponse['message'] ?? 'Unknown error';
+          debugPrint('NotificationService: Server trả về success=false: $msg');
+          // Không rethrow → vẫn giữ cài đặt cục bộ
+        }
+      } else {
+        debugPrint('NotificationService: Lỗi HTTP ${response.statusCode}');
+        // Không rethrow → người dùng vẫn dùng được cài đặt offline
+      }
+    } on TimeoutException catch (e) {
+      debugPrint('NotificationService: Timeout khi lưu cài đặt: $e');
+      // Không rethrow → vẫn lưu được local
     } catch (e) {
-      print('❌ Error saving settings: $e');
-      rethrow;
+      debugPrint('NotificationService: Lỗi khi lưu cài đặt: $e');
+      // Không rethrow để tránh crash UI
+      // Người dùng vẫn có cài đặt cục bộ → trải nghiệm không bị gián đoạn
     }
   }
-
   // ==================== KHỞI TẠO ====================
   Future<void> initialize() async {
     try {
@@ -373,12 +328,16 @@ class SmartNotificationService {
     required String gioHoc,
     required String phongHoc,
     required bool isExam,
+    required String mssv, // Thêm tham số mssv bắt buộc
   }) async {
-    final settings = await getSettings();
+    final settings = await getSettings(mssv); // Truyền mssv vào getSettings
 
-    if (!settings.enabled) return;
-    if (isExam && !settings.examEnabled) return;
-    if (!isExam && !settings.scheduleEnabled) return;
+    // Nếu không lấy được settings, sử dụng defaultSettings
+    final effectiveSettings = settings ?? defaultSettings;
+
+    if (!effectiveSettings.enabled) return;
+    if (isExam && !effectiveSettings.examEnabled) return;
+    if (!isExam && !effectiveSettings.scheduleEnabled) return;
 
     // Parse giờ học (VD: "07:00")
     final timeParts = gioHoc.split(':');
@@ -394,7 +353,7 @@ class SmartNotificationService {
         phongThi: phongHoc,
         classHour: classHour,
         classMinute: classMinute,
-        settings: settings,
+        settings: effectiveSettings,
       );
     } else {
       await _scheduleClassNotifications(
@@ -405,7 +364,7 @@ class SmartNotificationService {
         phongHoc: phongHoc,
         classHour: classHour,
         classMinute: classMinute,
-        settings: settings,
+        settings: effectiveSettings,
       );
     }
   }
@@ -574,10 +533,14 @@ class SmartNotificationService {
     required String phongThi,
     required int daysAhead,
     required DateTime notifyAt,
+    required String mssv, // Thêm tham số mssv bắt buộc
   }) async {
-    final settings = await getSettings();
+    final settings = await getSettings(mssv); // Truyền mssv vào getSettings
 
-    if (!settings.enabled || !settings.examEnabled) return;
+    // Nếu không lấy được settings, sử dụng defaultSettings
+    final effectiveSettings = settings ?? defaultSettings;
+
+    if (!effectiveSettings.enabled || !effectiveSettings.examEnabled) return;
 
     if (notifyAt.isAfter(DateTime.now())) {
       await _scheduleNotification(

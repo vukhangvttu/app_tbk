@@ -1,23 +1,22 @@
+import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert';
-
+import '../features/auth/services/auth_service.dart';
 import '../utils/global_keys.dart';
 
-
 class NotificationServices {
-  static final NotificationServices _instance = NotificationServices
-      ._internal();
-
+  static final NotificationServices _instance = NotificationServices._internal();
   factory NotificationServices() => _instance;
-
   NotificationServices._internal();
 
   bool _isInitialized = false;
   BuildContext? _context;
+
+  // ✅ Shared Preferences keys
+  static const String _keyLastFcmToken = 'last_fcm_token';
+  static const String _keyLastDeviceId = 'last_device_id';
+  static const String _keyLastMssv = 'last_mssv';
 
   /// ✅ Init notification service (CHỈ GỌI SAU KHI FIREBASE READY)
   Future<void> init(BuildContext context) async {
@@ -40,29 +39,63 @@ class NotificationServices {
         return;
       }
 
+      // ✅ Request permission
       await _requestPermission();
 
+      // ✅ Get FCM token
       final fcmToken = await FirebaseMessaging.instance.getToken()
           .timeout(const Duration(seconds: 10), onTimeout: () {
         print('⏱️ FCM token timeout');
         return null;
       });
 
-      if (fcmToken != null && fcmToken.isNotEmpty) {
-        print('✅ Initial FCM Token: ${fcmToken.substring(0, 20)}...');
-        await saveFcmTokenToServer(mssv, fcmToken);
-      } else {
-        print('❌ Failed to get FCM token');
-        _showError('Không thể lấy FCM token, nên không thể nhận thông báo.');
+      if (fcmToken == null || fcmToken.isEmpty) {
+        throw Exception('FCM token is empty or null');
       }
 
-      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+      print('📱 Current FCM Token: ${fcmToken.substring(0, 20)}...');
+
+      // ✅ Get device info
+      final deviceInfo = await DeviceHelper.getDeviceInfo();
+      String deviceId = deviceInfo['device_id'];
+
+      // ✅ Check nếu cần update token
+      final shouldUpdate = await _shouldUpdateToken(
+        prefs: prefs,
+        mssv: mssv,
+        fcmToken: fcmToken,
+        deviceId: deviceId,
+      );
+
+      if (shouldUpdate) {
+        print('🔄 Token changed or first time - updating server...');
+        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
+
+        // ✅ Lưu token mới vào cache
+        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
+      } else {
+        print('⏭️ Token unchanged - skipping server update');
+      }
+
+      // ✅ Listen for token refresh
+      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
         print('🔄 FCM Token refreshed: ${newToken.substring(0, 20)}...');
-        saveFcmTokenToServer(mssv, newToken);
+
+        // ✅ Chỉ update nếu token thực sự thay đổi
+        final prefs = await SharedPreferences.getInstance();
+        final lastToken = prefs.getString(_keyLastFcmToken);
+
+        if (newToken != lastToken) {
+          await saveFcmTokenToServer(mssv, newToken, deviceId);
+          await _cacheTokenInfo(prefs, mssv, newToken, deviceId);
+        } else {
+          print('⏭️ Token refresh but same value - skipping');
+        }
       }).onError((err) {
         print('❌ Error on token refresh: $err');
       });
 
+      // ✅ Listen for foreground messages
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         print('📬 Received foreground message: ${message.notification?.title}');
       });
@@ -77,6 +110,59 @@ class NotificationServices {
     }
   }
 
+  /// ✅ Kiểm tra xem có cần update token không
+  Future<bool> _shouldUpdateToken({
+    required SharedPreferences prefs,
+    required String mssv,
+    required String fcmToken,
+    required String deviceId,
+  }) async {
+    final lastMssv = prefs.getString(_keyLastMssv);
+    final lastToken = prefs.getString(_keyLastFcmToken);
+    final lastDeviceId = prefs.getString(_keyLastDeviceId);
+
+    // ✅ Trường hợp CẦN update:
+    // 1. Chưa từng lưu token (first time)
+    if (lastToken == null || lastToken.isEmpty) {
+      print('  → First time setup');
+      return true;
+    }
+
+    // 2. MSSV thay đổi (user khác login)
+    if (lastMssv != mssv) {
+      print('  → MSSV changed: $lastMssv → $mssv');
+      return true;
+    }
+
+    // 3. FCM token thay đổi
+    if (lastToken != fcmToken) {
+      print('  → Token changed');
+      return true;
+    }
+
+    // 4. Device ID thay đổi (reinstall app)
+    if (lastDeviceId != deviceId) {
+      print('  → Device ID changed');
+      return true;
+    }
+
+    // ✅ Không cần update
+    return false;
+  }
+
+  /// ✅ Cache token info vào SharedPreferences
+  Future<void> _cacheTokenInfo(
+      SharedPreferences prefs,
+      String mssv,
+      String fcmToken,
+      String deviceId,
+      ) async {
+    await prefs.setString(_keyLastMssv, mssv);
+    await prefs.setString(_keyLastFcmToken, fcmToken);
+    await prefs.setString(_keyLastDeviceId, deviceId);
+    print('💾 Cached token info');
+  }
+
   Future<void> _requestPermission() async {
     try {
       final settings = await FirebaseMessaging.instance.requestPermission(
@@ -89,6 +175,7 @@ class NotificationServices {
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
         print('✅ Notification permission granted');
       } else {
+        print('⚠️ Notification permission denied');
         _showError('Ứng dụng chưa được cấp quyền thông báo.');
       }
     } catch (e) {
@@ -96,27 +183,24 @@ class NotificationServices {
     }
   }
 
-  Future<void> saveFcmTokenToServer(String mssv, String fcmToken) async {
-    try {
-      print('💾 Saving FCM token for MSSV: $mssv');
+  Future<void> saveFcmTokenToServer(String mssv, String fcmToken, String deviceId) async {
+    final url = '/users/$mssv/token';
 
-      final response = await http.post(
-        Uri.parse(
-            'http://192.168.1.120:8080/notification-service/api/users/$mssv/token'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'fcmToken': fcmToken}),
-      ).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          throw Exception('Connection timeout');
-        },
+    try {
+      print('🌐 POST $url');
+      print('   Body: {fcmToken: ${fcmToken.substring(0, 20)}..., deviceId: $deviceId}');
+
+      final response = await AuthService.authenticatedRequestNotification(
+        method: 'POST',
+        endpoint: url,
+        body: {'fcmToken': fcmToken, 'deviceId': deviceId},
       );
 
-      if (response.statusCode == 200) {
+      if (response?.statusCode == 200) {
         print('✅ FCM token saved successfully');
       } else {
-        print('❌ Failed to save FCM token: ${response.statusCode}');
-        print('Response: ${response.body}');
+        print('❌ Failed to save FCM token: ${response?.statusCode}');
+        print('   Response: ${response?.body}');
         _showError('Không thể lưu FCM token nên không thể nhận thông báo.');
       }
     } catch (e) {
@@ -131,10 +215,15 @@ class NotificationServices {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('mssv', mssv);
 
-      // Lấy lại token và save
+      final deviceInfo = await DeviceHelper.getDeviceInfo();
+      String deviceId = deviceInfo['device_id'];
+
+      // ✅ Force update vì MSSV thay đổi
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
-        await saveFcmTokenToServer(mssv, fcmToken);
+        print('🔄 MSSV updated - forcing token refresh');
+        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
+        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
       }
     } catch (e) {
       print('❌ Error updating MSSV: $e');
@@ -145,15 +234,22 @@ class NotificationServices {
   Future<void> clearToken() async {
     try {
       await FirebaseMessaging.instance.deleteToken();
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('mssv');
-      print('✅ FCM token cleared');
+
+      // ✅ Xóa cache để lần login sau sẽ gọi API
+      await prefs.remove(_keyLastFcmToken);
+      await prefs.remove(_keyLastDeviceId);
+      await prefs.remove(_keyLastMssv);
+
+      print('✅ FCM token cleared (cache cleared for next login)');
     } catch (e) {
       print('❌ Error clearing token: $e');
     }
   }
 
-  /// ✅ Hiển thị thông báo lỗi (SnackBar hoặc Dialog)
+  /// ✅ Hiển thị thông báo lỗi
   void _showError(String message) {
     print('⚠️ Show global SnackBar: $message');
 
@@ -179,79 +275,60 @@ class NotificationServices {
       ),
     );
   }
+
+  /// ✅ Debug: Xem token cache hiện tại
+  Future<void> debugPrintTokenCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    print('═══════════════════════════════════════');
+    print('📋 Token Cache Debug:');
+    print('   MSSV: ${prefs.getString(_keyLastMssv) ?? "null"}');
+    print('   Token: ${prefs.getString(_keyLastFcmToken)?.substring(0, 20) ?? "null"}...');
+    print('   Device: ${prefs.getString(_keyLastDeviceId) ?? "null"}');
+    print('═══════════════════════════════════════');
+  }
+}
+
+
+// ==================== DEVICE HELPER PLACEHOLDER ====================
+// Bạn cần implement DeviceHelper.getDeviceInfo() thực tế
+class DeviceHelper {
+  static Future<Map<String, dynamic>> getDeviceInfo() async {
+    // TODO: Implement real device info
+    return {
+      'device_id': 'device_${DateTime.now().millisecondsSinceEpoch}',
+    };
+  }
 }
 
 
 // ==================== CÁCH SỬ DỤNG ====================
 
 /*
-// 1. Trong PostLoginInitializer (main.dart):
+// 1. Đăng nhập lần đầu (hoặc sau khi xóa app):
+//    → Gọi API lưu token ✅
 
-static Future<void> _initNotifications() async {
-  final sw = Stopwatch()..start();
-  try {
-    await Future.wait([
-      NotificationServices().init(),  // ✅ Gọi sau khi Firebase ready
-      NotificationService.init(),
-    ]);
-    sw.stop();
-    debugPrint('  ✓ Notifications ready (${sw.elapsedMilliseconds}ms)');
-  } catch (e) {
-    debugPrint('  ✗ Notifications error: $e');
-  }
-}
+// 2. Đăng nhập lại (token chưa thay đổi):
+//    → KHÔNG gọi API ⏭️
 
-// 2. Trong LoginScreen sau khi login success:
+// 3. Xóa app và cài lại:
+//    → Cache bị xóa → Gọi API lại ✅
 
-Future<void> _handleLogin() async {
-  // ... login code ...
+// 4. Token tự động refresh:
+//    → Chỉ gọi API nếu token thực sự thay đổi ✅
 
-  if (success) {
-    // Lưu MSSV vào SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('mssv', mssv);
-
-    // Init Firebase + Notifications
-    await PostLoginInitializer.initialize();
-
-    // Navigate...
-  }
-}
-
-// 3. Khi logout:
-
-Future<void> logout() async {
-  await NotificationServices().clearToken();
-  // ... other logout code ...
-}
+// 5. Logout:
+//    → Xóa cache → Lần login sau sẽ gọi API ✅
 */
 
-// ==================== DEBUG TIPS ====================
+// ==================== DEBUG ====================
 
 /*
-// Nếu vẫn không hoạt động, kiểm tra:
+// Để debug, thêm vào màn hình nào đó:
 
-1. Firebase đã init chưa?
-   ✓ Gọi Firebase.initializeApp() trước NotificationServices().init()
-
-2. MSSV có trong SharedPreferences chưa?
-   ✓ await prefs.setString('mssv', mssv) sau login
-
-3. FCM token có được tạo không?
-   ✓ Check console logs: "Initial FCM Token: ..."
-
-4. Network có hoạt động không?
-   ✓ Ping http://192.168.1.120:8080
-
-5. Android: google-services.json đã thêm chưa?
-   ✓ android/app/google-services.json
-
-6. iOS: GoogleService-Info.plist đã thêm chưa?
-   ✓ ios/Runner/GoogleService-Info.plist
-
-7. Permissions đã được grant chưa?
-   ✓ Check Settings → Apps → Your App → Notifications
-
-8. Test trên thiết bị thật (không phải emulator)
-   ✓ FCM có thể không hoạt động tốt trên emulator
+ElevatedButton(
+  onPressed: () async {
+    await NotificationServices().debugPrintTokenCache();
+  },
+  child: Text('Debug Token Cache'),
+)
 */

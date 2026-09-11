@@ -17,6 +17,7 @@
     "or" : "Hoặc",
     "biometric_not_enabled": "Chưa kích hoạt. Hãy đăng nhập và bật trong Cài đặt.",
     "biometric_not_supported": "Thiết bị không hỗ trợ sinh trắc học.",
+    "time_out" : "Lỗi timeout: Kết nối đến server thất bại. Vui lòng kiểm tra mạng!",
 
 
 "validation": {
@@ -44,7 +45,7 @@
   },
   "home": {
 
-    "title": "Trang chủ",
+    "title": "Lịch",
     "title_1": "Lịch Học/Thi",
     "schedule": "Lịch học",
     "exam": "Lịch thi",
@@ -78,6 +79,8 @@
     "title": "Cá nhân",
     "title_1": "Thông tin cá nhân",
     "student_info": "Thông tin sinh viên",
+    "ngaysinh": "Ngày sinh",
+    "gender": "Giới tính",
     "mssv": "Mã số sinh viên",
     "email": "Email",
     "phone": "Số điện thoại",

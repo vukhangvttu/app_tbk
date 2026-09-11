@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:get/get.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/auth_service.dart';
+import '../services/auth_state_manager.dart';
 
 class LoginController extends GetxController {
   final LocalAuthentication _localAuth = LocalAuthentication();
@@ -17,23 +20,48 @@ class LoginController extends GetxController {
   void onInit() {
     super.onInit();
     initBiometric();
+    // Không tự động chạy _startTokenRefreshTimer() khi chưa login
+  }
+
+  @override
+  void onClose() {
+    _tokenRefreshTimer?.cancel();
+    super.onClose();
+  }
+
+  // ========== TOKEN REFRESH TIMER ==========
+  Timer? _tokenRefreshTimer;
+
+  /// Tự động kiểm tra và refresh token mỗi 5 phút (chỉ chạy khi đã đăng nhập)
+  void _startTokenRefreshTimer() {
+    _tokenRefreshTimer?.cancel();
+    _tokenRefreshTimer = Timer.periodic(
+      const Duration(minutes: 5),
+      (timer) async {
+        if (AuthStateManager().currentState != AuthState.authenticated) {
+          timer.cancel();
+          return;
+        }
+        final isValid = await AuthService.isTokenValid();
+        if (!isValid) {
+          print('⚠️ Token không hợp lệ - Dừng timer');
+          timer.cancel();
+        }
+      },
+    );
   }
 
   // ========== BIOMETRIC FUNCTIONS ==========
 
-  /// Khởi tạo và kiểm tra hỗ trợ sinh trắc học
   Future<void> initBiometric() async {
     try {
-      // Kiểm tra thiết bị có hỗ trợ sinh trắc học không
       final canCheck = await _localAuth.canCheckBiometrics;
       final isSupported = await _localAuth.isDeviceSupported();
       canCheckBiometrics.value = canCheck && isSupported;
 
-      // Lấy danh sách các loại sinh trắc học có sẵn
       final available = await _localAuth.getAvailableBiometrics();
       availableBiometrics.value = available;
 
-      // Xác định loại sinh trắc học
       if (available.contains(BiometricType.face)) {
         biometricType.value = 'Face ID';
       } else if (available.contains(BiometricType.fingerprint)) {
@@ -44,11 +72,9 @@ class LoginController extends GetxController {
         biometricType.value = 'Sinh trắc học';
       }
 
-      // Kiểm tra trạng thái đã bật sinh trắc học chưa
       biometricEnabled.value = await AuthService.isBiometricEnabled();
 
-      print('✅ Biometric initialized: ${biometricType
-          .value}, Enabled: ${biometricEnabled.value}');
+      print('✅ Biometric initialized: ${biometricType.value}, Enabled: ${biometricEnabled.value}');
     } catch (e) {
       print('❌ Lỗi khởi tạo sinh trắc học: $e');
       canCheckBiometrics.value = false;
@@ -56,7 +82,6 @@ class LoginController extends GetxController {
     }
   }
 
-  /// Xác thực sinh trắc học (không đăng nhập, chỉ xác thực)
   Future<bool> authenticateBiometric({String? reason}) async {
     try {
       if (!canCheckBiometrics.value) {
@@ -72,9 +97,7 @@ class LoginController extends GetxController {
         ),
       );
 
-      print(authenticated
-          ? '✅ Xác thực sinh trắc học thành công'
-          : '❌ Xác thực sinh trắc học thất bại');
+      print(authenticated ? '✅ Xác thực sinh trắc học thành công' : '❌ Xác thực sinh trắc học thất bại');
       return authenticated;
     } catch (e) {
       print('❌ Lỗi xác thực sinh trắc học: $e');
@@ -82,7 +105,6 @@ class LoginController extends GetxController {
     }
   }
 
-  /// Kiểm tra có thể tự động đăng nhập bằng sinh trắc học không
   Future<bool> canAutoLoginWithBiometric() async {
     try {
       if (!biometricEnabled.value || !canCheckBiometrics.value) {
@@ -91,9 +113,7 @@ class LoginController extends GetxController {
       }
 
       final canAuto = await AuthService.canAutoLoginWithBiometric();
-      print(canAuto
-          ? '✅ Có thể tự động đăng nhập'
-          : '❌ Không thể tự động đăng nhập (token hết hạn)');
+      print(canAuto ? '✅ Có thể tự động đăng nhập' : '❌ Không thể tự động đăng nhập (token hết hạn)');
       return canAuto;
     } catch (e) {
       print('❌ Lỗi kiểm tra auto login: $e');
@@ -101,7 +121,6 @@ class LoginController extends GetxController {
     }
   }
 
-  /// Bật sinh trắc học (yêu cầu xác thực trước)
   Future<bool> enableBiometricWithAuth(String mssv, String password) async {
     try {
       if (!canCheckBiometrics.value) {
@@ -109,7 +128,7 @@ class LoginController extends GetxController {
         return false;
       }
 
-      // Bước 1: Xác thực sinh trắc học
+      // Xác thực sinh trắc học
       final authenticated = await authenticateBiometric(
         reason: 'Xác thực để bật ${biometricType.value}',
       );
@@ -119,17 +138,17 @@ class LoginController extends GetxController {
         return false;
       }
 
-      // Bước 2: Đăng nhập lại với rememberMe = true để lấy token dài hạn
+      // Đăng nhập lại để lấy tokens mới
       isLoading.value = true;
       final success = await AuthService.loginWithBiometric(mssv, password);
       isLoading.value = false;
 
       if (!success) {
-        print('❌ Không thể lấy token dài hạn');
+        print('❌ Không thể lấy tokens');
         return false;
       }
 
-      // Bước 3: Lưu trạng thái sinh trắc học đã bật
+      // Lưu trạng thái sinh trắc học
       await AuthService.enableBiometric(true);
       biometricEnabled.value = true;
 
@@ -142,7 +161,6 @@ class LoginController extends GetxController {
     }
   }
 
-  /// Tắt sinh trắc học
   Future<void> disableBiometric() async {
     try {
       await AuthService.enableBiometric(false);
@@ -155,7 +173,35 @@ class LoginController extends GetxController {
 
   // ========== LOGIN FUNCTIONS ==========
 
-  /// Đăng nhập thông thường (Token ngắn hạn - 1 ngày)
+  /// Đăng nhập bằng Google
+  Future<bool> loginWithGoogle(String idToken) async {
+    try {
+      if (idToken.isEmpty) {
+        throw Exception('idToken không được để trống');
+      }
+
+      isLoading.value = true;
+      print('🔄 Đang đăng nhập với Google...');
+
+      final success = await AuthService.loginWithGoogle(idToken);
+
+      if (success) {
+        print('✅ Đăng nhập Google thành công');
+        _startTokenRefreshTimer();
+      } else {
+        print('❌ Đăng nhập Google thất bại');
+      }
+
+      return success;
+    } catch (e) {
+      print('❌ Lỗi đăng nhập Google: $e');
+      rethrow;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  /// Đăng nhập thông thường
   Future<bool> login(String mssv, String password) async {
     try {
       if (mssv.isEmpty || password.isEmpty) {
@@ -169,6 +215,7 @@ class LoginController extends GetxController {
 
       if (success) {
         print('✅ Đăng nhập thành công');
+        _startTokenRefreshTimer(); // Bắt đầu auto refresh
       } else {
         print('❌ Đăng nhập thất bại - Sai thông tin đăng nhập');
       }
@@ -176,13 +223,13 @@ class LoginController extends GetxController {
       return success;
     } catch (e) {
       print('❌ Lỗi đăng nhập: $e');
-      rethrow; // Ném lại lỗi để screen xử lý
+      rethrow;
     } finally {
       isLoading.value = false;
     }
   }
 
-  /// Đăng nhập với sinh trắc học (Token dài hạn - 30 ngày)
+  /// Đăng nhập với sinh trắc học
   Future<bool> loginWithBiometric(String mssv, String password) async {
     try {
       if (mssv.isEmpty || password.isEmpty) {
@@ -195,7 +242,8 @@ class LoginController extends GetxController {
       final success = await AuthService.loginWithBiometric(mssv, password);
 
       if (success) {
-        print('✅ Đăng nhập sinh trắc học thành công (Token 30 ngày)');
+        print('✅ Đăng nhập sinh trắc học thành công');
+        _startTokenRefreshTimer();
       } else {
         print('❌ Đăng nhập sinh trắc học thất bại');
       }
@@ -209,7 +257,7 @@ class LoginController extends GetxController {
     }
   }
 
-  /// Đăng nhập tự động bằng sinh trắc học (khi mở app)
+  /// Đăng nhập tự động bằng sinh trắc học
   Future<bool> autoLoginWithBiometric() async {
     try {
       if (!biometricEnabled.value || !canCheckBiometrics.value) {
@@ -221,7 +269,7 @@ class LoginController extends GetxController {
       final canAuto = await canAutoLoginWithBiometric();
       if (!canAuto) {
         print('❌ Token đã hết hạn - Cần đăng nhập lại');
-        await disableBiometric(); // Tắt sinh trắc học khi token hết hạn
+        await disableBiometric();
         return false;
       }
 
@@ -240,6 +288,7 @@ class LoginController extends GetxController {
       await prefs.setBool('biometric_authenticated', true);
 
       print('✅ Đăng nhập tự động thành công');
+      _startTokenRefreshTimer();
       return true;
     } catch (e) {
       print('❌ Lỗi đăng nhập tự động: $e');
@@ -261,24 +310,50 @@ class LoginController extends GetxController {
     }
   }
 
+  /// Refresh access token thủ công
+  Future<bool> refreshToken() async {
+    try {
+      isLoading.value = true;
+      print('🔄 Đang refresh access token...');
+
+      final success = await AuthService.refreshAccessToken();
+
+      if (success) {
+        print('✅ Refresh token thành công');
+      } else {
+        print('❌ Refresh token thất bại - Cần đăng nhập lại');
+      }
+
+      return success;
+    } catch (e) {
+      print('❌ Lỗi refresh token: $e');
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
   /// Lấy thông tin người dùng đã lưu
   Future<Map<String, String?>> getSavedUserInfo() async {
     try {
       final mssv = await AuthService.getSavedMssv();
       final idSinhVien = await AuthService.getIdSinhVien();
-      final token = await AuthService.getToken();
+      final accessToken = await AuthService.getAccessToken();
+      final refreshToken = await AuthService.getRefreshToken();
 
       return {
         'mssv': mssv,
         'idSinhVien': idSinhVien,
-        'token': token,
+        'accessToken': accessToken,
+        'refreshToken': refreshToken,
       };
     } catch (e) {
       print('❌ Lỗi lấy thông tin người dùng: $e');
       return {
         'mssv': null,
         'idSinhVien': null,
-        'token': null,
+        'accessToken': null,
+        'refreshToken': null,
       };
     }
   }
@@ -293,8 +368,8 @@ class LoginController extends GetxController {
 
       await AuthService.logout();
       biometricEnabled.value = false;
+      _tokenRefreshTimer?.cancel();
 
-      // Xóa trạng thái xác thực
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('biometric_authenticated');
 
@@ -308,7 +383,6 @@ class LoginController extends GetxController {
 
   // ========== VALIDATION ==========
 
-  /// Validate MSSV
   String? validateMssv(String? value) {
     if (value == null || value.isEmpty) {
       return 'MSSV không được để trống';
@@ -322,7 +396,6 @@ class LoginController extends GetxController {
     return null;
   }
 
-  /// Validate Password
   String? validatePassword(String? value) {
     if (value == null || value.isEmpty) {
       return 'Mật khẩu không được để trống';
@@ -335,5 +408,4 @@ class LoginController extends GetxController {
     }
     return null;
   }
-
 }

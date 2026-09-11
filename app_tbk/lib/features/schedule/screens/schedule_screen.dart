@@ -5,12 +5,12 @@ import 'package:app_tbk/models/class_schedule.dart';
 import 'package:app_tbk/services/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:table_calendar/table_calendar.dart';
 
+import 'package:app_tbk/config/academic_config.dart';
 import '../../../services/api_service.dart';
 import '../../auth/services/auth_service.dart';
+import '../../auth/services/post_login_initializer.dart';
 
 
 
@@ -37,7 +37,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
   int tuanDuocChon = 1;
   List<int> danhSachTuan = List.generate(25, (i) => i + 1);
 
-  static final DateTime ngayBatDauHocKy = DateTime(2025, 9, 1);
+  static final DateTime ngayBatDauHocKy = AcademicConfig.ngayBatDauHocKy;
   late final DateTime ngayDau = DateTime(ngayBatDauHocKy.year, 1, 1); // Đầu năm của học kỳ
   late final DateTime ngayCuoi = DateTime(ngayBatDauHocKy.year + 1, 12, 31); // Cuối năm sau
 
@@ -46,12 +46,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
+    // ✅ Đảm bảo services đã init (nếu chưa thì init)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PostLoginInitializer.ensureInitialized(context);
+    });
     _tabController = TabController(length: 2, vsync: this);
     ngayTapTrung = DateTime.now();
     ngayDuocChon = ngayTapTrung;
     tinhTuanHocHienTai();
     tuanDuocChon = tuanHocHienTai;
-    taiDuLieu();
+     taiDuLieu(refresh: false);
   }
 
   @override
@@ -90,9 +94,14 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     }
   }
 
-  Future<void> taiDuLieu() async {
-    // Nếu đã có dữ liệu và không đang tải thì return
-    if (lichHoc.isNotEmpty && lichThi.isNotEmpty && !dangTai) return;
+  Future<void> taiDuLieu({bool refresh = false}) async {
+    // Nếu không phải refresh và đã có dữ liệu → không tải lại
+    if (!refresh && lichHoc.isNotEmpty && lichThi.isNotEmpty && !dangTai) {
+      return;
+    }
+
+    // An toàn: nếu widget đã bị dispose → không làm gì
+    if (!mounted) return;
 
     setState(() {
       dangTai = true;
@@ -100,21 +109,18 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     });
 
     try {
-      // Lấy ID sinh viên từ AuthService
-      final idSinhVien = await AuthService.getIdSinhVien();
+      final idSinhVien = (await AuthService.getIdSinhVien())?.toString();
       if (idSinhVien == null || idSinhVien.isEmpty) {
         throw Exception('Không tìm thấy thông tin sinh viên');
       }
 
-      // Gọi API trực tiếp qua ApiService
-      final List<dynamic> data = await ApiService.getSchedule(
-        int.parse(idSinhVien), // Hoặc hardcode: 19719
-        1,                    // Học kỳ
-        '2025-2026',         // Năm học
+      final List<dynamic> data = await ApiService.getThoiKhoaBieu(
+        idSinhVien: idSinhVien, // Dùng biến thật, không hardcode
+        hocKy: AcademicConfig.hocKy,
+        namHoc: AcademicConfig.namHoc,
       );
 
-      // Parse dữ liệu
-      List<LopHoc> tatCa = data.map((json) {
+      final List<LopHoc> tatCa = data.map((json) {
         return LopHoc(
           tenMon: json['TENMON'] ?? '',
           thu: json['THU'] ?? 2,
@@ -131,6 +137,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         );
       }).toList();
 
+      // 🔴 QUAN TRỌNG: Kiểm tra mounted trước khi setState sau await
+      if (!mounted) return;
+
       setState(() {
         lichHoc = tatCa;
         lichThi = tatCa.where((lop) => lop.nhomThi).toList();
@@ -140,66 +149,73 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         ngayDuocChon = ngayTapTrung;
       });
 
-      // Kiểm tra và thông báo lịch hôm nay
-      // _xuLyThongBao();
+      // _xuLyThongBao(); // Nếu có gọi async → cũng cần kiểm tra mounted bên trong
 
     } on UnauthorizedException catch (e) {
-      // Token hết hạn hoặc không hợp lệ
+      if (!mounted) return;
+
       setState(() {
         loi = 'Phiên đăng nhập đã hết hạn';
         dangTai = false;
       });
 
-      // Chuyển về màn hình login sau 1 giây
-      await Future.delayed(Duration(seconds: 1));
+      await Future.delayed(const Duration(seconds: 1));
       if (mounted) {
         Navigator.of(context).pushReplacementNamed('/login');
-        // Hoặc nếu dùng GetX:
-        // Get.offAllNamed('/login');
       }
 
     } on TimeoutException catch (e) {
+      if (!mounted) return;
+
       setState(() {
         loi = 'Máy chủ phản hồi quá lâu. Vui lòng thử lại sau.';
         dangTai = false;
       });
+
       batDauDemNguocTaiLai();
 
     } on SocketException catch (e) {
+      if (!mounted) return;
+
       setState(() {
         loi = 'Không có kết nối internet';
         dangTai = false;
       });
 
     } catch (e) {
+      if (!mounted) return;
+
+      String errorMsg = e.toString();
+
+      String finalMessage;
+      if (errorMsg.contains('Không tìm thấy token') || errorMsg.contains('hết hạn')) {
+        finalMessage = 'Vui lòng đăng nhập lại';
+      } else if (errorMsg.contains('401')) {
+        finalMessage = 'Không có quyền truy cập';
+      } else if (errorMsg.contains('404')) {
+        finalMessage = 'Không tìm thấy dữ liệu';
+      } else if (errorMsg.contains('500')) {
+        finalMessage = 'Lỗi máy chủ';
+      } else {
+        finalMessage = errorMsg.replaceAll('Exception: ', '');
+      }
+
       setState(() {
-        // Xử lý các lỗi khác
-        String errorMsg = e.toString();
-
-        if (errorMsg.contains('Không tìm thấy token') ||
-            errorMsg.contains('hết hạn')) {
-          loi = 'Vui lòng đăng nhập lại';
-          // Chuyển về login
-          Future.delayed(Duration(seconds: 1), () {
-            if (mounted) {
-              Navigator.of(context).pushReplacementNamed('/login');
-            }
-          });
-        } else if (errorMsg.contains('401')) {
-          loi = 'Không có quyền truy cập';
-        } else if (errorMsg.contains('404')) {
-          loi = 'Không tìm thấy dữ liệu';
-        } else if (errorMsg.contains('500')) {
-          loi = 'Lỗi máy chủ';
-        } else {
-          loi = errorMsg.replaceAll('Exception: ', '');
-        }
-
+        loi = finalMessage;
         dangTai = false;
       });
+
+      // Chỉ navigate nếu là lỗi token hết hạn
+      if (errorMsg.contains('Không tìm thấy token') ||
+          errorMsg.contains('hết hạn') ||
+          errorMsg.contains('401')) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (mounted) {
+          Navigator.of(context).pushReplacementNamed('/login');
+        }
+      }
     }
   }
-
 // Hàm helper phân tích ngày
   DateTime _phanTichNgay(String? ngayStr) {
     if (ngayStr == null || ngayStr.isEmpty) {
@@ -222,7 +238,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       lichHoc.clear();
       lichThi.clear();
     });
-    await taiDuLieu();
+    await taiDuLieu(refresh: false);
   }
 
   Future<void> _xuLyThongBao() async {
@@ -301,7 +317,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       demNguoc = 0;
     });
 
-    taiDuLieu();
+    await taiDuLieu(refresh: false);
   }
 
   List<LopHoc> layLichHienTai() {
@@ -376,8 +392,10 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
+
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         elevation: 0,
         scrolledUnderElevation: 0,
         backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
@@ -392,7 +410,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         actions: [
           IconButton(
             icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
-            onPressed: taiDuLieu,
+            onPressed: () => taiDuLieu(refresh: true),
             tooltip: 'home.refresh'.tr(),
           ),
           const SizedBox(width: 8),
@@ -415,24 +433,25 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         ),
       ),
       body: dangTai
-          ? Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(
-              color: Theme.of(context).primaryColor,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'home.loading'.tr(),
-              style: TextStyle(
-                fontSize: 16,
-                color: Theme.of(context).textTheme.bodyMedium?.color,
-              ),
-            ),
-          ],
-        ),
-      )
+          ?_buildTabSkeleton()
+      // Center(
+      //   child: Column(
+      //     mainAxisAlignment: MainAxisAlignment.center,
+      //     children: [
+      //       CircularProgressIndicator(
+      //         color: Theme.of(context).primaryColor,
+      //       ),
+      //       const SizedBox(height: 16),
+      //       Text(
+      //         'home.loading'.tr(),
+      //         style: TextStyle(
+      //           fontSize: 16,
+      //           color: Theme.of(context).textTheme.bodyMedium?.color,
+      //         ),
+      //       ),
+      //     ],
+      //   ),
+      // )
           : loi.isNotEmpty
           ? Center(
         child: SingleChildScrollView(
@@ -466,12 +485,13 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                 ),
               )
                   : ElevatedButton.icon(
-                onPressed: taiDuLieu,
+                  onPressed: () => taiDuLieu(refresh: false),
                 icon: const Icon(Icons.refresh),
                 label:  Text('home.retry'.tr()),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Theme.of(context).primaryColor,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                  foregroundColor: Colors.white,
+
                   padding: const EdgeInsets.symmetric(
                     horizontal: 24,
                     vertical: 12,
@@ -507,18 +527,19 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    'home.pull_down_to_reload'.tr(),
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Theme.of(context).textTheme.bodySmall?.color,
-                    ),
-                  ),
+                  // Text(
+                  //   'home.pull_down_to_reload'.tr(),
+                  //   style: TextStyle(
+                  //     fontSize: 14,
+                  //     color: Theme.of(context).textTheme.bodySmall?.color,
+                  //   ),
+                  // ),
                 ],
               ),
             )
                 : RefreshIndicator(
-              onRefresh: taiDuLieu,
+              onRefresh: () => taiDuLieu(refresh: false),
+
               child: ListView(
                 padding: EdgeInsets.all(laMayTinhBang ? 24 : 16),
                 children: nhomLichTheoNgay(lichHienTai).entries.map((mucNgay) {
@@ -540,8 +561,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
           });
         },
         backgroundColor: Theme.of(context).primaryColor,
-        child: const Icon(Icons.calendar_view_week),
+
         tooltip: 'home.view_by_school_week'.tr(),
+        child: const Icon(
+          Icons.calendar_view_week,
+          color: Colors.white,
+        ),
       )
           : laTuanHoc
           ? FloatingActionButton(
@@ -555,7 +580,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
           });
         },
         backgroundColor: Theme.of(context).primaryColor,
-        child: const Icon(Icons.calendar_today),
+        child: const Icon(Icons.calendar_today, color: Colors.white,),
         tooltip: 'home.return_to_the_date_calendar'.tr(),
       )
           : null,
@@ -1105,6 +1130,100 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
             ),
           ),
         ],
+      ),
+    );
+  }
+
+
+  Widget _buildTabSkeleton() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final base = isDark ? Colors.grey[800]! : Colors.grey[300]!;
+    final highlight = isDark ? Colors.grey[700]! : Colors.grey[100]!;
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: 5,
+      itemBuilder: (_, i) => Card(
+        margin: const EdgeInsets.only(bottom: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Tiêu đề ngày
+              Row(
+                children: [
+                  Container(width: 4, height: 28, color: base),
+                  const SizedBox(width: 12),
+                  Container(width: 180, height: 20, color: base),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Buổi học
+              ...List.generate(2, (s) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.wb_sunny_outlined, size: 18, color: base),
+                      const SizedBox(width: 8),
+                      Container(width: 60, height: 16, color: base),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Môn học
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: base.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: base.withOpacity(0.5)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            // Điểm tròn nhỏ
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: base,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Container(width: 150, height: 16, color: base),
+                            const Spacer(),
+                            Container(width: 40, height: 20, color: highlight),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(Icons.access_time_rounded, size: 16, color: base),
+                            const SizedBox(width: 6),
+                            Container(width: 80, height: 14, color: highlight),
+                            const SizedBox(width: 16),
+                            Icon(Icons.room_rounded, size: 16, color: base),
+                            const SizedBox(width: 6),
+                            Container(width: 70, height: 14, color: highlight),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              )),
+            ],
+          ),
+        ),
       ),
     );
   }
