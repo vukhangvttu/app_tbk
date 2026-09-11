@@ -27,6 +27,11 @@ jobs:
           if [ -d "app_tbk" ]; then cd app_tbk; fi
           flutter pub get
 
+      - name: Configure Flutter iOS
+        run: |
+          if [ -d "app_tbk" ]; then cd app_tbk; fi
+          flutter build ios --config-only --no-codesign
+
       - name: Install CocoaPods dependencies
         run: |
           if [ -d "app_tbk" ]; then cd app_tbk; fi
