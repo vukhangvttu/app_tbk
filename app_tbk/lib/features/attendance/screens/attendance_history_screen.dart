@@ -35,11 +35,6 @@ DateTime _parseServerDateTime(dynamic raw) {
 
 class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     with SingleTickerProviderStateMixin {
-  // ✅ STATIC CACHE - Giữ cache giữa các lần navigate
-  static List<dynamic> _cachedAttendanceList = [];
-  static DateTime? _lastFetchTime;
-  static const Duration _cacheDuration = Duration(minutes: 5);
-
   List<dynamic> _attendanceList = [];
   List<dynamic> _filteredList = [];
   bool _isLoading = true;
@@ -49,8 +44,36 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   String? _selectedMaMon;
   DateTimeRange? _selectedDateRange;
   DateTime? _selectedSingleDate;
-  String _dateFilterType = 'none';
+  String _dateFilterType = 'none'; // 'none', 'days', 'single', 'range'
+  int? _soNgay = 14; // Mặc định 14 ngày
   List<String> _availableMaMon = [];
+
+  String? get _tuNgayParam {
+    if (_dateFilterType == 'single' && _selectedSingleDate != null) {
+      return DateFormat('yyyy-MM-dd').format(_selectedSingleDate!);
+    }
+    if (_dateFilterType == 'range' && _selectedDateRange != null) {
+      return DateFormat('yyyy-MM-dd').format(_selectedDateRange!.start);
+    }
+    return null;
+  }
+
+  String? get _denNgayParam {
+    if (_dateFilterType == 'single' && _selectedSingleDate != null) {
+      return DateFormat('yyyy-MM-dd').format(_selectedSingleDate!);
+    }
+    if (_dateFilterType == 'range' && _selectedDateRange != null) {
+      return DateFormat('yyyy-MM-dd').format(_selectedDateRange!.end);
+    }
+    return null;
+  }
+
+  int? get _soNgayParam {
+    if (_dateFilterType == 'single' || _dateFilterType == 'range') {
+      return null;
+    }
+    return _soNgay ?? 14;
+  }
 
   int _currentTabIndex = 0;
   final Map<int, bool> _tabLoading = {0: false, 1: false, 2: false, 3: false};
@@ -59,37 +82,26 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   late TabController _tabController;
   bool _tabTransitionLoading = false;
 
-  // ✅ PUBLIC METHOD - Kiểm tra cache trước khi fetch
   void loadTab(int tabIndex) {
     if (!mounted) return;
 
-    // ✅ Kiểm tra cache STATIC trước
-    if (_isCacheValid() && _cachedAttendanceList.isNotEmpty) {
-      print('📦 Sử dụng STATIC cache, không gọi API');
-      print('📦 Cache time: $_lastFetchTime');
-      print('📦 Cache còn: ${_cacheDuration.inMinutes - DateTime.now().difference(_lastFetchTime!).inMinutes} phút');
-
+    if (_attendanceList.isNotEmpty) {
       setState(() {
         _currentTabIndex = tabIndex;
         _isLoading = false;
         _tabTransitionLoading = false;
-        // Load từ cache
-        _attendanceList = List.from(_cachedAttendanceList);
-        _extractMaMon();
         _applyFilters();
       });
       return;
     }
 
-    // Nếu cache hết hạn → fetch mới
-    print('❌ Cache hết hạn hoặc chưa có, gọi API...');
     setState(() {
       _currentTabIndex = tabIndex;
       _isLoading = true;
       _tabTransitionLoading = true;
     });
 
-    _fetchAttendanceHistory(tabIndex, forceRefresh: false).then((_) {
+    _fetchAttendanceHistory(tabIndex).then((_) {
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -97,15 +109,6 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         });
       }
     });
-  }
-
-  // ✅ Kiểm tra cache còn hiệu lực không (dùng STATIC)
-  bool _isCacheValid() {
-    if (_lastFetchTime == null) return false;
-    final diff = DateTime.now().difference(_lastFetchTime!);
-    final isValid = diff < _cacheDuration;
-    print('🔍 Cache check: ${isValid ? "Valid" : "Expired"} (${diff.inMinutes}/${_cacheDuration.inMinutes} phút)');
-    return isValid;
   }
 
   // ✅ PUBLIC METHOD - Fetch data với tùy chọn force refresh
@@ -150,23 +153,9 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     });
   }
 
-  // ✅ Fetch với cache logic (lưu vào STATIC)
   Future<void> _fetchAttendanceHistory(int tabIndex, {bool forceRefresh = false}) async {
     // Nếu đang loading → không fetch nữa
     if (_tabLoading[tabIndex] == true) return;
-
-    // Nếu không force refresh và cache còn hiệu lực → không fetch
-    if (!forceRefresh && _isCacheValid() && _cachedAttendanceList.isNotEmpty) {
-      print('📦 Cache còn hiệu lực, load từ STATIC cache');
-      setState(() {
-        _attendanceList = List.from(_cachedAttendanceList);
-        _extractMaMon();
-        _applyFilters();
-        _isLoading = false;
-        _tabLoaded[tabIndex] = true;
-      });
-      return;
-    }
 
     setState(() {
       _isLoading = true;
@@ -180,8 +169,17 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         throw Exception('Không tìm thấy thông tin sinh viên');
       }
 
-      print('🔄 Fetching data từ API...');
-      final data = await AttendanceHistoryService.getAttendanceHistory(idSinhVien);
+      final tuNgay = _tuNgayParam;
+      final denNgay = _denNgayParam;
+      final soNgay = _soNgayParam;
+
+      print('🔄 Fetching data từ API với params: TuNgay=$tuNgay, DenNgay=$denNgay, SoNgay=$soNgay...');
+      final data = await AttendanceHistoryService.getAttendanceHistory(
+        idSinhVien,
+        tuNgay: tuNgay,
+        denNgay: denNgay,
+        soNgay: soNgay,
+      );
 
       // Sort NgayTao giảm dần
       data.sort((a, b) {
@@ -191,19 +189,12 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
       });
 
       setState(() {
-        // ✅ Lưu vào STATIC cache
-        _cachedAttendanceList = List.from(data);
         _attendanceList = data;
-
         _extractMaMon();
         _applyFilters();
         _isLoading = false;
         _tabLoading[tabIndex] = false;
         _tabLoaded[tabIndex] = true;
-
-        // ✅ Cập nhật STATIC cache time
-        _lastFetchTime = DateTime.now();
-        print('✅ Fetch thành công, cache đến: ${_lastFetchTime!.add(_cacheDuration)}');
       });
     } catch (e) {
       setState(() {
@@ -215,8 +206,6 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   // ✅ Extract mã môn (tách riêng để tái sử dụng)
-// Thêm field mới cạnh _availableMaMon
-
   Map<String, String> _maMonLabels = {}; // maMon -> "maMon - tenMon"
 
   void _extractMaMon() {
@@ -240,56 +229,19 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     _maMonLabels = labels;
   }
 
-  // ✅ Refresh - Force fetch mới (reset STATIC cache)
+  // Refresh data
   Future<void> _fetchAttendanceHistory_refresh() async {
-    print('🔄 Force refresh - Reset STATIC cache...');
+    print('🔄 Refreshing data từ API...');
 
     setState(() {
       _isLoading = true;
       _error = null;
-      // ✅ Reset STATIC cache
-      _lastFetchTime = null;
-      _cachedAttendanceList = [];
       for (var key in _tabLoaded.keys) {
         _tabLoaded[key] = false;
       }
     });
 
-    try {
-      final idSinhVien = await AuthService.getIdSinhVien();
-      if (idSinhVien == null || idSinhVien.isEmpty) {
-        throw Exception('Không tìm thấy thông tin sinh viên');
-      }
-
-      print('🔄 Fetching fresh data từ API...');
-      final data = await AttendanceHistoryService.getAttendanceHistory(idSinhVien);
-
-      data.sort((a, b) {
-        final dateA = DateTime.tryParse(a['NgayTao']?.toString() ?? '') ?? DateTime(1900);
-        final dateB = DateTime.tryParse(b['NgayTao']?.toString() ?? '') ?? DateTime(1900);
-        return dateB.compareTo(dateA);
-      });
-
-      setState(() {
-        // ✅ Cập nhật STATIC cache
-        _cachedAttendanceList = List.from(data);
-        _attendanceList = data;
-
-        _extractMaMon();
-        _applyFilters();
-        _isLoading = false;
-        _tabLoaded[_currentTabIndex] = true;
-
-        // ✅ Cập nhật STATIC cache time
-        _lastFetchTime = DateTime.now();
-        print('✅ Refresh thành công, STATIC cache mới đến: ${_lastFetchTime!.add(_cacheDuration)}');
-      });
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-      });
-    }
+    await _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
   }
 
 
@@ -348,16 +300,18 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         selectedDateRange: _selectedDateRange,
         selectedSingleDate: _selectedSingleDate,
         dateFilterType: _dateFilterType,
+        soNgay: _soNgay,
         availableMaMon: _availableMaMon,
         maMonLabels: _maMonLabels,
-        onApply: (maMon, dateRange, singleDate, filterType) {
+        onApply: (maMon, dateRange, singleDate, filterType, soNgay) {
           setState(() {
             _selectedMaMon = maMon;
             _selectedDateRange = dateRange;
             _selectedSingleDate = singleDate;
             _dateFilterType = filterType;
-            _applyFilters();
+            _soNgay = soNgay;
           });
+          _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
         },
         onReset: () {
           setState(() {
@@ -365,8 +319,9 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
             _selectedDateRange = null;
             _selectedSingleDate = null;
             _dateFilterType = 'none';
-            _applyFilters();
+            _soNgay = 14;
           });
+          _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
         },
       ),
     );
@@ -431,7 +386,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final hasActiveFilters = _selectedMaMon != null ||
         _dateFilterType == 'single' ||
-        _dateFilterType == 'range';
+        _dateFilterType == 'range' ||
+        (_soNgay != 14 && _soNgay != null);
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -516,48 +472,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     }
 
     if (_filteredList.isEmpty) {
-      return _buildEmptyState(isDark); // Tạo riêng
-    }
-
-    if (_filteredList.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.inbox_outlined,
-              size: 64,
-              color: isDark ? Colors.white38 : Colors.grey.shade400,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _attendanceList.isEmpty
-                  ? 'Chưa có lịch sử điểm danh'
-                  : 'Không tìm thấy kết quả',
-              style: TextStyle(
-                fontSize: 16,
-                color: isDark ? Colors.white70 : Colors.black54,
-              ),
-            ),
-            if (_attendanceList.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              TextButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _selectedMaMon = null;
-                    _selectedDateRange = null;
-                    _selectedSingleDate = null;
-                    _dateFilterType = 'none';
-                    _applyFilters();
-                  });
-                },
-                icon: const Icon(Icons.clear_all),
-                label: const Text('Xóa bộ lọc'),
-              ),
-            ],
-          ],
-        ),
-      );
+      return _buildEmptyState(isDark);
     }
 
     return RefreshIndicator(
@@ -575,6 +490,11 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
 
 
   Widget _buildEmptyState(bool isDark) {
+    final hasActiveFilters = _selectedMaMon != null ||
+        _dateFilterType == 'single' ||
+        _dateFilterType == 'range' ||
+        (_soNgay != 14 && _soNgay != null);
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -589,7 +509,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
             _attendanceList.isEmpty ? 'Chưa có lịch sử điểm danh' : 'Không tìm thấy kết quả',
             style: TextStyle(fontSize: 16, color: isDark ? Colors.white70 : Colors.black54),
           ),
-          if (_attendanceList.isNotEmpty) ...[
+          if (_attendanceList.isNotEmpty || hasActiveFilters) ...[
             const SizedBox(height: 16),
             TextButton.icon(
               onPressed: () {
@@ -598,8 +518,9 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                   _selectedDateRange = null;
                   _selectedSingleDate = null;
                   _dateFilterType = 'none';
-                  _applyFilters();
+                  _soNgay = 14;
                 });
+                _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
               },
               icon: const Icon(Icons.clear_all),
               label: const Text('Xóa bộ lọc'),
@@ -937,9 +858,10 @@ class _FilterBottomSheet extends StatefulWidget {
   final DateTimeRange? selectedDateRange;
   final DateTime? selectedSingleDate;
   final String dateFilterType;
+  final int? soNgay;
   final List<String> availableMaMon;
   final Map<String, String> maMonLabels;
-  final Function(String?, DateTimeRange?, DateTime?, String) onApply;
+  final Function(String?, DateTimeRange?, DateTime?, String, int?) onApply;
   final VoidCallback onReset;
 
   const _FilterBottomSheet({
@@ -947,6 +869,7 @@ class _FilterBottomSheet extends StatefulWidget {
     required this.selectedDateRange,
     required this.selectedSingleDate,
     required this.dateFilterType,
+    required this.soNgay,
     required this.availableMaMon,
     required this.maMonLabels,
     required this.onApply,
@@ -962,6 +885,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
   DateTimeRange? _tempDateRange;
   DateTime? _tempSingleDate;
   String _tempDateFilterType = 'none';
+  int? _tempSoNgay = 14;
 
   @override
   void initState() {
@@ -970,6 +894,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
     _tempDateRange = widget.selectedDateRange;
     _tempSingleDate = widget.selectedSingleDate;
     _tempDateFilterType = widget.dateFilterType;
+    _tempSoNgay = widget.soNgay ?? 14;
   }
 
   Future<void> _selectSingleDate() async {
@@ -1008,6 +933,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
         _tempSingleDate = picked;
         _tempDateFilterType = 'single';
         _tempDateRange = null;
+        _tempSoNgay = null;
       });
     }
   }
@@ -1048,6 +974,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
         _tempDateRange = picked;
         _tempDateFilterType = 'range';
         _tempSingleDate = null;
+        _tempSoNgay = null;
       });
     }
   }
@@ -1168,6 +1095,118 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                   ),
                   const SizedBox(height: 12),
 
+                  // Preset options: 14 ngày / 30 ngày
+                  Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _tempSoNgay = 14;
+                              _tempDateFilterType = 'days';
+                              _tempSingleDate = null;
+                              _tempDateRange = null;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
+                                  ? const Color(0xFF6366F1).withOpacity(0.1)
+                                  : Colors.transparent,
+                              border: Border.all(
+                                color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
+                                    ? const Color(0xFF6366F1)
+                                    : (isDark ? Colors.white24 : Colors.grey.shade300),
+                                width: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14 ? 2 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              children: [
+                                Text(
+                                  '14 ngày gần nhất',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                    color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
+                                        ? const Color(0xFF6366F1)
+                                        : (isDark ? Colors.white : Colors.black87),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '(Mặc định)',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isDark ? Colors.white54 : Colors.grey.shade600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _tempSoNgay = 30;
+                              _tempDateFilterType = 'days';
+                              _tempSingleDate = null;
+                              _tempDateRange = null;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: _tempDateFilterType == 'days' && _tempSoNgay == 30
+                                  ? const Color(0xFF6366F1).withOpacity(0.1)
+                                  : Colors.transparent,
+                              border: Border.all(
+                                color: _tempDateFilterType == 'days' && _tempSoNgay == 30
+                                    ? const Color(0xFF6366F1)
+                                    : (isDark ? Colors.white24 : Colors.grey.shade300),
+                                width: _tempDateFilterType == 'days' && _tempSoNgay == 30 ? 2 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              children: [
+                                Text(
+                                  '30 ngày gần nhất',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: _tempDateFilterType == 'days' && _tempSoNgay == 30
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                    color: _tempDateFilterType == 'days' && _tempSoNgay == 30
+                                        ? const Color(0xFF6366F1)
+                                        : (isDark ? Colors.white : Colors.black87),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '(Mở rộng)',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isDark ? Colors.white54 : Colors.grey.shade600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
                   // Single date option
                   InkWell(
                     onTap: _selectSingleDate,
@@ -1234,6 +1273,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                                 setState(() {
                                   _tempSingleDate = null;
                                   _tempDateFilterType = 'none';
+                                  _tempSoNgay = 14;
                                 });
                               },
                               color: const Color(0xFF6366F1),
@@ -1310,6 +1350,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                                 setState(() {
                                   _tempDateRange = null;
                                   _tempDateFilterType = 'none';
+                                  _tempSoNgay = 14;
                                 });
                               },
                               color: const Color(0xFF6366F1),
@@ -1350,7 +1391,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                       Expanded(
                         child: ElevatedButton(
                           onPressed: () {
-                            widget.onApply(_tempMaMon, _tempDateRange, _tempSingleDate, _tempDateFilterType);
+                            widget.onApply(_tempMaMon, _tempDateRange, _tempSingleDate, _tempDateFilterType, _tempSoNgay);
                             Navigator.pop(context);
                           },
                           style: ElevatedButton.styleFrom(
@@ -1375,8 +1416,6 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
     );
   }
 }
-
-
 
 class _AttendanceDetailSheet extends StatelessWidget {
   final dynamic item;

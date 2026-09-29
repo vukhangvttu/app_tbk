@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:app_tbk/config/api_constants.dart';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:http/http.dart' as http;
 
@@ -12,6 +14,10 @@ class HttpClientWrapper {
       String endpoint, {
         Map<String, String>? queryParams,
       }) async {
+    if (!await AuthService.hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     final token = await AuthService.getToken();
     if (token == null) {
       throw UnauthorizedException('Token không tồn tại');
@@ -39,6 +45,10 @@ class HttpClientWrapper {
       String endpoint, {
         Map<String, dynamic>? body,
       }) async {
+    if (!await AuthService.hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     final token = await AuthService.getToken();
     if (token == null) {
       throw UnauthorizedException('Token không tồn tại');
@@ -70,6 +80,10 @@ class HttpClientWrapper {
       String endpoint, {
         Map<String, dynamic>? body,
       }) async {
+    if (!await AuthService.hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     final token = await AuthService.getToken();
     if (token == null) {
       throw UnauthorizedException('Token không tồn tại');
@@ -98,6 +112,10 @@ class HttpClientWrapper {
 
   // DELETE request với token
   static Future<http.Response> delete(String endpoint) async {
+    if (!await AuthService.hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     final token = await AuthService.getToken();
     if (token == null) {
       throw UnauthorizedException('Token không tồn tại');
@@ -138,11 +156,24 @@ class HttpClientWrapper {
 
   // Xử lý lỗi
   static Exception _handleError(dynamic error) {
+    if (error is NoInternetException) {
+      return error;
+    }
     if (error is UnauthorizedException) {
       return error;
     }
     if (error is ApiException) {
       return error;
+    }
+    if (error is SocketException || error is http.ClientException) {
+      return NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+    final errStr = error.toString().toLowerCase();
+    if (errStr.contains('socketexception') ||
+        errStr.contains('clientexception') ||
+        errStr.contains('failed host lookup') ||
+        errStr.contains('network is unreachable')) {
+      return NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     }
     return Exception('Lỗi kết nối: $error');
   }

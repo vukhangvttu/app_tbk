@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:app_tbk/config/api_constants.dart';
 import 'package:app_tbk/config/api_notification.dart';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/auth/services/post_login_initializer.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -32,6 +33,7 @@ class AuthService {
   // 🔹 Mutex / Single Flight Lock cho refresh token (tránh Token Reuse Error khi gọi song song)
   static bool _isRefreshingToken = false;
   static Completer<bool>? _refreshTokenCompleter;
+  static DateTime? _lastRefreshTime;
   static final _authStateManager = AuthStateManager();
 
   // ========== STORAGE KEYS ==========
@@ -43,16 +45,27 @@ class AuthService {
   static const String _keyUserId = 'user_id';
 
   static Future<bool> _hasInternetConnection() async {
-    final connectivityResult = await Connectivity().checkConnectivity();
-    return connectivityResult != ConnectivityResult.none;
+    try {
+      final connectivityResults = await Connectivity().checkConnectivity();
+      if (connectivityResults.isEmpty ||
+          connectivityResults.contains(ConnectivityResult.none)) {
+        return false;
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
+
+  /// Public helper kiểm tra kết nối Internet
+  static Future<bool> hasInternetConnection() => _hasInternetConnection();
 
   // ========== LOGIN ==========
 
   /// 🔑 Đăng nhập thông thường
   static Future<bool> login(String username, String password) async {
     if (!await _hasInternetConnection()) {
-      throw Exception('Không có kết nối internet');
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     }
 
     final retryOptions = RetryOptions(
@@ -137,11 +150,24 @@ class AuthService {
       }
     } on TimeoutException catch (e) {
       throw Exception('Lỗi timeout khi kết nối đến server: $e');
-    } on SocketException catch (e) {
-      throw Exception('Lỗi kết nối: $e');
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    } on http.ClientException catch (_) {
+      throw NoInternetException('Không thể kết nối đến máy chủ. Vui lòng kiểm tra lại kết nối mạng.');
     } on HttpException catch (e) {
       throw Exception('Lỗi HTTP: $e');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') ||
+          errStr.contains('clientexception') ||
+          errStr.contains('failed host lookup') ||
+          errStr.contains('network is unreachable') ||
+          errStr.contains('no route to host') ||
+          errStr.contains('connection refused') ||
+          errStr.contains('kết nối mạng')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       throw Exception('Lỗi không xác định khi đăng nhập: $e');
     } finally {
       client?.close();
@@ -165,8 +191,26 @@ class AuthService {
   }
 
   /// 🔄 Refresh Access Token khi hết hạn (Có cơ chế Lock tránh Race Condition / Token Reuse)
-  static Future<bool> refreshAccessToken() async {
-    // 🔹 Nếu đang có 1 request refresh token chạy dở, chờ kết quả từ request đó
+  static Future<bool> refreshAccessToken({String? failedToken}) async {
+    // 1. Kiểm tra xem token đã được refresh bởi request khác gần đây chưa (tránh gọi trùng lặp)
+    final currentAccessToken = await _storage.read(key: _keyAccessToken);
+    if (failedToken != null && currentAccessToken != null && currentAccessToken != failedToken) {
+      if (!JwtDecoder.isExpired(currentAccessToken)) {
+        print('ℹ️ Access token đã được refresh bởi request trước đó, sử dụng token mới.');
+        return true;
+      }
+    }
+
+    // 2. Cooldown check: Nếu vừa refresh thành công trong vòng 3 giây
+    if (_lastRefreshTime != null &&
+        DateTime.now().difference(_lastRefreshTime!) < const Duration(seconds: 3)) {
+      if (currentAccessToken != null && !JwtDecoder.isExpired(currentAccessToken)) {
+        print('ℹ️ Token vừa được refresh cách đây dưới 3 giây, dùng token mới.');
+        return true;
+      }
+    }
+
+    // 3. Nếu đang có 1 request refresh token chạy dở, chờ kết quả từ request đó
     if (_isRefreshingToken && _refreshTokenCompleter != null) {
       print('⏳ Token đang được refresh bởi request khác, chờ kết quả...');
       return await _refreshTokenCompleter!.future;
@@ -201,17 +245,21 @@ class AuthService {
       final client = http.Client();
 
       try {
-        final accessToken = await _storage.read(key: _keyAccessToken);
+        final deviceId = await _storage.read(key: _keyDeviceId);
         final headers = {
           'Content-Type': 'application/json',
-          if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+        };
+
+        final bodyData = {
+          'refresh_token': refreshToken,
+          if (deviceId != null && deviceId.isNotEmpty) 'device_id': deviceId,
         };
 
         final response = await client
             .post(
           Uri.parse('${ApiConstants.baseUrl}/auth/refresh'),
           headers: headers,
-          body: jsonEncode({'refresh_token': refreshToken}),
+          body: jsonEncode(bodyData),
         )
             .timeout(_timeoutDuration);
 
@@ -226,7 +274,9 @@ class AuthService {
             await _storage.write(key: _keyAccessToken, value: newAccessToken);
             await _storage.write(key: _keyRefreshToken, value: newRefreshToken);
 
-            print('✅ Refresh token thành công');
+            _lastRefreshTime = DateTime.now();
+
+            print('✅ Refresh token thành công (Đã lưu refresh_token mới)');
 
             // ✅ QUAN TRỌNG: Notify UI rằng đã authenticated thành công
             _authStateManager.notifyAuthenticationSuccess();
@@ -235,13 +285,13 @@ class AuthService {
             return true;
           }
         } else if (response.statusCode == 401) {
-          print('❌ Refresh token không hợp lệ - Đăng xuất');
+          print('❌ Refresh token không hợp lệ hoặc token reuse detected (401): ${response.body}');
           await _handleAuthenticationFailure();
           _completerFinish(false);
           return false;
         }
 
-        print('❌ Refresh token thất bại: ${response.statusCode}');
+        print('❌ Refresh token thất bại (${response.statusCode}): ${response.body}');
         await _handleAuthenticationFailure();
         _completerFinish(false);
         return false;
@@ -264,7 +314,7 @@ class AuthService {
   /// 🔑 Đăng nhập bằng Google OAuth2 (idToken lấy từ Flutter google_sign_in)
   static Future<bool> loginWithGoogle(String idToken) async {
     if (!await _hasInternetConnection()) {
-      throw Exception('Không có kết nối internet');
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     }
 
     final retryOptions = RetryOptions(
@@ -352,12 +402,24 @@ class AuthService {
       }
     } on TimeoutException catch (e) {
       throw Exception('Lỗi timeout khi kết nối đến server: $e');
-    } on SocketException catch (e) {
-      throw Exception('Lỗi kết nối: $e');
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    } on http.ClientException catch (_) {
+      throw NoInternetException('Không thể kết nối đến máy chủ. Vui lòng kiểm tra lại kết nối mạng.');
     } on HttpException catch (e) {
       throw Exception('Lỗi HTTP: $e');
     } catch (e) {
-      if (e is GoogleAccountNotLinkedException) rethrow;
+      if (e is GoogleAccountNotLinkedException || e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') ||
+          errStr.contains('clientexception') ||
+          errStr.contains('failed host lookup') ||
+          errStr.contains('network is unreachable') ||
+          errStr.contains('no route to host') ||
+          errStr.contains('connection refused') ||
+          errStr.contains('kết nối mạng')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       throw Exception('Lỗi không xác định khi đăng nhập Google: $e');
     } finally {
       client?.close();
@@ -379,7 +441,7 @@ class AuthService {
       // Kiểm tra token đã hết hạn chưa
       if (JwtDecoder.isExpired(accessToken)) {
         print('⚠️ Access token đã hết hạn - Đang refresh...');
-        final refreshed = await refreshAccessToken();
+        final refreshed = await refreshAccessToken(failedToken: accessToken);
         if (refreshed) {
           return await _storage.read(key: _keyAccessToken);
         }
@@ -391,7 +453,7 @@ class AuthService {
         final remainingTime = JwtDecoder.getRemainingTime(accessToken);
         if (remainingTime.inSeconds < 15) {
           print('⚠️ Access token sắp hết hạn (${remainingTime.inSeconds}s) - Đang refresh...');
-          final refreshed = await refreshAccessToken();
+          final refreshed = await refreshAccessToken(failedToken: accessToken);
           if (refreshed) {
             return await _storage.read(key: _keyAccessToken);
           }
@@ -444,6 +506,7 @@ class AuthService {
       }
 
       // Xóa tất cả dữ liệu local
+      _lastRefreshTime = null;
       await _storage.delete(key: _keyAccessToken);
       await _storage.delete(key: _keyRefreshToken);
       await _storage.delete(key: _keyDeviceId);
@@ -490,6 +553,10 @@ class AuthService {
     dynamic body,
     bool retry = true,
   }) async {
+    if (!await _hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     try {
       final accessToken = await getAccessToken();
       if (accessToken == null) {
@@ -543,8 +610,8 @@ class AuthService {
 
       // Nếu 401 và còn retry -> refresh token và thử lại
       if (response.statusCode == 401 && retry) {
-        print('⚠️ 401 Unauthorized - Đang refresh token và thử lại...');
-        final refreshed = await refreshAccessToken();
+        print('⚠️ 401 Unauthorized tại $endpoint - Đang refresh token và thử lại...');
+        final refreshed = await refreshAccessToken(failedToken: accessToken);
         if (refreshed) {
           return await authenticatedRequestNotification(
             method: method,
@@ -558,7 +625,27 @@ class AuthService {
       }
 
       return response;
+    } on TimeoutException catch (_) {
+      print('⏰ Timeout sau 20 giây: $endpoint');
+      throw Exception('Kết nối máy chủ quá thời gian phản hồi (timeout), vui lòng thử lại.');
+    } on SocketException catch (e) {
+      print('❌ Lỗi kết nối mạng: $e');
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    } on http.ClientException catch (e) {
+      print('❌ Lỗi client HTTP: $e');
+      throw NoInternetException('Không thể kết nối đến máy chủ. Vui lòng kiểm tra lại kết nối mạng.');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') ||
+          errStr.contains('clientexception') ||
+          errStr.contains('failed host lookup') ||
+          errStr.contains('network is unreachable') ||
+          errStr.contains('no route to host') ||
+          errStr.contains('connection refused') ||
+          errStr.contains('kết nối mạng')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       print('❌ Lỗi authenticated request: $e');
       rethrow;
     }
@@ -578,6 +665,10 @@ class AuthService {
   }) async {
     // 🔹 Thiết lập timeout 20 giây cho tất cả request
     const timeoutDuration = Duration(seconds: 20);
+
+    if (!await _hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
 
     try {
       final accessToken = await getAccessToken();
@@ -654,8 +745,8 @@ class AuthService {
 
       // 🔁 Xử lý token hết hạn (401)
       if (response.statusCode == 401 && retry) {
-        print('⚠️ 401 Unauthorized - Đang refresh token và thử lại...');
-        final refreshed = await refreshAccessToken();
+        print('⚠️ 401 Unauthorized tại $endpoint - Đang refresh token và thử lại...');
+        final refreshed = await refreshAccessToken(failedToken: accessToken);
         if (refreshed) {
           return await authenticatedRequestLichSinhVien(
             method: method,
@@ -674,8 +765,25 @@ class AuthService {
       return response;
     } on TimeoutException catch (_) {
       print('⏰ Timeout sau 20 giây: $endpoint');
-      throw Exception('Kết nối quá lâu, vui lòng thử lại');
+      throw Exception('Kết nối máy chủ quá thời gian phản hồi (timeout), vui lòng thử lại.');
+    } on SocketException catch (e) {
+      print('❌ Lỗi kết nối mạng: $e');
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    } on http.ClientException catch (e) {
+      print('❌ Lỗi client HTTP: $e');
+      throw NoInternetException('Không thể kết nối đến máy chủ. Vui lòng kiểm tra lại kết nối mạng.');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') ||
+          errStr.contains('clientexception') ||
+          errStr.contains('failed host lookup') ||
+          errStr.contains('network is unreachable') ||
+          errStr.contains('no route to host') ||
+          errStr.contains('connection refused') ||
+          errStr.contains('kết nối mạng')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       print('❌ Lỗi authenticated request: $e');
       rethrow;
     }
@@ -723,7 +831,7 @@ class AuthService {
 
     // 🔁 Token hết hạn → refresh 1 lần
     if (response.statusCode == 401) {
-      final refreshed = await refreshAccessToken();
+      final refreshed = await refreshAccessToken(failedToken: accessToken);
       if (!refreshed) {
         throw Exception('Session hết hạn - Vui lòng đăng nhập lại');
       }
@@ -752,7 +860,7 @@ class AuthService {
         if (_authStateManager.currentState == AuthState.unauthenticated) {
           return false;
         }
-        return await refreshAccessToken();
+        return await refreshAccessToken(failedToken: accessToken);
       }
 
       return true;

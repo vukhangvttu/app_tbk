@@ -39,6 +39,8 @@ android {
 
     buildTypes {
         getByName("release") {
+            // ✅ Ký APK release bằng debug key để có thể cài đặt trực tiếp trên mọi điện thoại
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../config/api_constants.dart';
@@ -20,7 +22,14 @@ class ForgotPasswordService {
         final error = jsonDecode(response.body);
         throw Exception(error['message'] ?? 'Không thể gửi OTP');
       }
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') || errStr.contains('clientexception')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       throw Exception('Lỗi kết nối: $e');
     }
   }
@@ -45,7 +54,14 @@ class ForgotPasswordService {
       } else {
         return false;
       }
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') || errStr.contains('clientexception')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       throw Exception('Lỗi xác thực: $e');
     }
   }
@@ -68,7 +84,14 @@ class ForgotPasswordService {
         final error = jsonDecode(response.body);
         throw Exception(error['message'] ?? 'Không thể cập nhật mật khẩu');
       }
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     } catch (e) {
+      if (e is NoInternetException) rethrow;
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('socketexception') || errStr.contains('clientexception')) {
+        throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      }
       throw Exception('Lỗi cập nhật mật khẩu: $e');
     }
   }

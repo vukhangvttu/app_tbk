@@ -1,22 +1,23 @@
-// lib/core/initializers/post_login_initializer.dart
-
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 
+import '../../../config/academic_config.dart';
 import '../../../firebase_options.dart';
 import '../../../services/notificationservice.dart';
 import '../../../services/simple_firebase_service.dart';
+import '../../../utils/global_keys.dart';
 
 class PostLoginInitializer {
   static bool _isInitialized = false;
   static bool _isInitializing = false;
-  static bool _hasShownSuccessMessage = false; // ← Mới: chỉ hiện thông báo 1 lần
+  static bool _hasShownSuccessMessage = false;
 
   static const String _prefKeyInitialized = 'post_login_services_initialized';
   static const String _prefKeyShownMessage = 'post_login_shown_notification_message';
 
-  /// ✅ Quick init - Không block UI
+  /// ✅ Quick init - Không block UI (Chạy ngầm asynchronously)
   static Future<void> quickInit({
     required BuildContext context,
     String? mssv,
@@ -55,8 +56,8 @@ class PostLoginInitializer {
       return;
     }
 
-    // Chưa từng init → chạy đầy đủ
-    await _initServicesInBackground(context, prefs);
+    // Chưa từng init → kích hoạt chạy ngầm không await
+    _initServicesInBackground(context, prefs);
   }
 
   static Future<void> _saveMSSV(String mssv) async {
@@ -75,6 +76,7 @@ class PostLoginInitializer {
     try {
       await _initFirebase();
       await _initNotifications(context);
+      await AcademicConfig.fetchAcademicTerm();
 
       _isInitialized = true;
       sw.stop();
@@ -84,23 +86,23 @@ class PostLoginInitializer {
       await prefs.setBool(_prefKeyInitialized, true);
 
       // Chỉ hiện thông báo nếu chưa từng hiện trong phiên này
-      if (context.mounted && !_hasShownSuccessMessage) {
+      if (!_hasShownSuccessMessage) {
         _hasShownSuccessMessage = true;
         await prefs.setBool(_prefKeyShownMessage, true);
-        _showQuietSuccess(context);
+        _showQuietSuccess();
       }
     } catch (e) {
       sw.stop();
       debugPrint('❌ Init error (${sw.elapsedMilliseconds}ms): $e');
 
-      if (context.mounted && !_hasShownSuccessMessage) {
+      if (!_hasShownSuccessMessage) {
         _hasShownSuccessMessage = true;
-        _showQuietError(context, e.toString());
+        _showQuietError(e.toString());
       }
 
       // Retry sau 5s
       Future.delayed(const Duration(seconds: 5), () {
-        if (!_isInitialized && context.mounted) {
+        if (!_isInitialized) {
           debugPrint('🔄 Retrying initialization...');
           _isInitializing = false;
           _initServicesInBackground(context, prefs);
@@ -111,7 +113,6 @@ class PostLoginInitializer {
     }
   }
 
-  // Các hàm _initFirebase, _initNotifications giữ nguyên
   static Future<void> _initFirebase() async {
     try {
       await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -133,10 +134,10 @@ class PostLoginInitializer {
     }
   }
 
-  static void _showQuietSuccess(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
+  static void _showQuietSuccess() {
+    rootScaffoldMessengerKey.currentState?.showSnackBar(
       SnackBar(
-        content: Row(
+        content: const Row(
           children: [
             Icon(Icons.check_circle, color: Colors.white, size: 20),
             SizedBox(width: 8),
@@ -144,18 +145,18 @@ class PostLoginInitializer {
           ],
         ),
         backgroundColor: Colors.green.shade600,
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
-        margin: EdgeInsets.all(16),
+        margin: const EdgeInsets.all(16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     );
   }
 
-  static void _showQuietError(BuildContext context, String error) {
-    ScaffoldMessenger.of(context).showSnackBar(
+  static void _showQuietError(String error) {
+    rootScaffoldMessengerKey.currentState?.showSnackBar(
       SnackBar(
-        content: Row(
+        content: const Row(
           children: [
             Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
             SizedBox(width: 8),
@@ -163,14 +164,13 @@ class PostLoginInitializer {
           ],
         ),
         backgroundColor: Colors.orange.shade700,
-        duration: Duration(seconds: 3),
+        duration: const Duration(seconds: 3),
         behavior: SnackBarBehavior.floating,
-        margin: EdgeInsets.all(16),
+        margin: const EdgeInsets.all(16),
       ),
     );
   }
 
-  // Các hàm khác giữ nguyên
   static Future<void> ensureInitialized(BuildContext context) async { /* ... */ }
 
   static bool get isInitialized => _isInitialized;
@@ -187,6 +187,4 @@ class PostLoginInitializer {
 
     debugPrint('🔄 Post-login services reset');
   }
-
-
 }

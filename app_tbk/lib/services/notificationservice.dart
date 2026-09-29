@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../features/auth/services/auth_service.dart';
 import '../utils/global_keys.dart';
+import 'notification_tracking_service.dart';
 
 class NotificationServices {
   static final NotificationServices _instance = NotificationServices._internal();
@@ -53,43 +55,30 @@ class NotificationServices {
         throw Exception('FCM token is empty or null');
       }
 
-      print('📱 Current FCM Token: ${fcmToken.substring(0, 20)}...');
+      print('📱 Current FCM Token: $fcmToken');
 
-      // ✅ Get device info
+      // ✅ Get real device info from AuthService
       final deviceInfo = await DeviceHelper.getDeviceInfo();
-      String deviceId = deviceInfo['device_id'];
+      String deviceId = deviceInfo['device_id'] ?? 'unknown_device';
 
-      // ✅ Check nếu cần update token
-      final shouldUpdate = await _shouldUpdateToken(
-        prefs: prefs,
-        mssv: mssv,
-        fcmToken: fcmToken,
-        deviceId: deviceId,
-      );
-
-      if (shouldUpdate) {
-        print('🔄 Token changed or first time - updating server...');
-        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
-
-        // ✅ Lưu token mới vào cache
-        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
-      } else {
-        print('⏭️ Token unchanged - skipping server update');
-      }
+      // ✅ Luôn cập nhật Token lên Go Server khi init để đảm bảo DB luôn có Token mới nhất
+      print('🔄 Updating FCM Token to server for MSSV $mssv...');
+      await saveFcmTokenToServer(mssv, fcmToken, deviceId);
+      await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
 
       // ✅ Listen for token refresh
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-        print('🔄 FCM Token refreshed: ${newToken.substring(0, 20)}...');
+        print('🔄 FCM Token refreshed: $newToken');
 
-        // ✅ Chỉ update nếu token thực sự thay đổi
         final prefs = await SharedPreferences.getInstance();
-        final lastToken = prefs.getString(_keyLastFcmToken);
+        final currentMssv = await AuthService.getSavedMssv() ?? prefs.getString('mssv') ?? '';
 
-        if (newToken != lastToken) {
-          await saveFcmTokenToServer(mssv, newToken, deviceId);
-          await _cacheTokenInfo(prefs, mssv, newToken, deviceId);
-        } else {
-          print('⏭️ Token refresh but same value - skipping');
+        final currentDeviceInfo = await DeviceHelper.getDeviceInfo();
+        final currentDeviceId = currentDeviceInfo['device_id'] ?? 'unknown_device';
+
+        if (currentMssv.isNotEmpty) {
+          await saveFcmTokenToServer(currentMssv, newToken, currentDeviceId);
+          await _cacheTokenInfo(prefs, currentMssv, newToken, currentDeviceId);
         }
       }).onError((err) {
         print('❌ Error on token refresh: $err');
@@ -98,6 +87,10 @@ class NotificationServices {
       // ✅ Listen for foreground messages
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         print('📬 Received foreground message: ${message.notification?.title}');
+        final notificationId = NotificationTrackingService.extractNotificationId(message.data);
+        if (notificationId != null) {
+          NotificationTrackingService.reportDelivered(notificationId);
+        }
       });
 
       _isInitialized = true;
@@ -105,7 +98,6 @@ class NotificationServices {
     } catch (e, stackTrace) {
       print('❌ Error initializing NotificationServices: $e');
       print('Stack trace: $stackTrace');
-      _showError('Không thể khởi tạo thông báo: $e');
       _isInitialized = true;
     }
   }
@@ -176,7 +168,6 @@ class NotificationServices {
         print('✅ Notification permission granted');
       } else {
         print('⚠️ Notification permission denied');
-        _showError('Ứng dụng chưa được cấp quyền thông báo.');
       }
     } catch (e) {
       print('⚠️ Error requesting permission: $e');
@@ -188,12 +179,18 @@ class NotificationServices {
 
     try {
       print('🌐 POST $url');
-      print('   Body: {fcmToken: ${fcmToken.substring(0, 20)}..., deviceId: $deviceId}');
+      print('   Body: {fcmToken: $fcmToken, deviceId: $deviceId}');
 
       final response = await AuthService.authenticatedRequestNotification(
         method: 'POST',
         endpoint: url,
-        body: {'fcmToken': fcmToken, 'deviceId': deviceId},
+        body: {
+          'fcmToken': fcmToken,
+          'fcm_token': fcmToken,
+          'token': fcmToken,
+          'deviceId': deviceId,
+          'device_id': deviceId,
+        },
       );
 
       if (response?.statusCode == 200) {
@@ -201,11 +198,11 @@ class NotificationServices {
       } else {
         print('❌ Failed to save FCM token: ${response?.statusCode}');
         print('   Response: ${response?.body}');
-        _showError('Không thể lưu FCM token nên không thể nhận thông báo.');
       }
+    } on NoInternetException {
+      print('🌐 Offline mode: Không thể gửi FCM token lên server do mất mạng - sẽ thử lại khi có mạng.');
     } catch (e) {
       print('❌ Error saving FCM token: $e');
-      _showError('Không thể lưu FCM token nên không thể nhận thông báo.');
     }
   }
 
@@ -282,21 +279,9 @@ class NotificationServices {
     print('═══════════════════════════════════════');
     print('📋 Token Cache Debug:');
     print('   MSSV: ${prefs.getString(_keyLastMssv) ?? "null"}');
-    print('   Token: ${prefs.getString(_keyLastFcmToken)?.substring(0, 20) ?? "null"}...');
+    print('   Token: ${prefs.getString(_keyLastFcmToken) ?? "null"}');
     print('   Device: ${prefs.getString(_keyLastDeviceId) ?? "null"}');
     print('═══════════════════════════════════════');
-  }
-}
-
-
-// ==================== DEVICE HELPER PLACEHOLDER ====================
-// Bạn cần implement DeviceHelper.getDeviceInfo() thực tế
-class DeviceHelper {
-  static Future<Map<String, dynamic>> getDeviceInfo() async {
-    // TODO: Implement real device info
-    return {
-      'device_id': 'device_${DateTime.now().millisecondsSinceEpoch}',
-    };
   }
 }
 

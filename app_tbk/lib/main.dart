@@ -244,8 +244,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   Future<void> _recheckAuthState() async {
     try {
       final isValid = await AuthService.isTokenValid();
-      if (mounted && _isAuthenticated != isValid) {
-        setState(() => _isAuthenticated = isValid);
+      if (mounted) {
+        if (_isAuthenticated != isValid || _isCheckingAuth) {
+          setState(() {
+            _isAuthenticated = isValid;
+            _isCheckingAuth = false;
+          });
+        }
       }
     } catch (e) {
       debugPrint('❌ Error rechecking auth: $e');

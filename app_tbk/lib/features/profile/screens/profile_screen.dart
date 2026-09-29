@@ -21,6 +21,7 @@ import '../../auth/services/auth_service.dart';
 import 'about_screen.dart';
 import 'change_password_screen.dart';
 import 'edit_profile_screen.dart';
+import 'face_id_setup_screen.dart';
 import 'feeback_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -61,6 +62,7 @@ class ProfileScreenState extends State<ProfileScreen>
   bool _hasError = false;
   String _errorMessage = '';
 
+  late Future<Map<String, String>> _authHeadersFuture;
 
   ThemeMode _themeMode = ThemeMode.system;
 
@@ -69,6 +71,7 @@ class ProfileScreenState extends State<ProfileScreen>
   @override
   void initState() {
     super.initState();
+    _authHeadersFuture = ProfileService.getAuthHeaders();
 
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
@@ -182,6 +185,7 @@ class ProfileScreenState extends State<ProfileScreen>
           _hasError = false;
           // Update timestamp để force reload avatar
           _avatarTimestamp = DateTime.now().millisecondsSinceEpoch;
+          _authHeadersFuture = ProfileService.getAuthHeaders();
         });
       } else {
         setState(() {
@@ -221,7 +225,7 @@ class ProfileScreenState extends State<ProfileScreen>
             ),
           ),
           body: FutureBuilder<Map<String, String>>(
-            future: ProfileService.getAuthHeaders(),
+            future: _authHeadersFuture,
             builder: (context, snapshot) {
               if (!snapshot.hasData) {
                 return const Center(
@@ -789,7 +793,7 @@ class ProfileScreenState extends State<ProfileScreen>
                 child: _profile.mssv.isEmpty
                     ? _buildInitialAvatar(theme)
                     : FutureBuilder<Map<String, String>>(
-                  future: ProfileService.getAuthHeaders(),
+                  future: _authHeadersFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
                       return const Center(
@@ -981,6 +985,21 @@ class ProfileScreenState extends State<ProfileScreen>
               context,
               MaterialPageRoute(
                 builder: (context) => const DeviceVerificationScreen(),
+              ),
+            );
+          },
+          isDark: isDark,
+        ),
+        // Thêm dòng Face ID
+        _buildActionTile(
+          icon: Icons.face_rounded,
+          title: 'Face ID',
+          subtitle: 'Thiết lập nhận diện khuôn mặt',
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const FaceIdSetupScreen(),
               ),
             );
           },

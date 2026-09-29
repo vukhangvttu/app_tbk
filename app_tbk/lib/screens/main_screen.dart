@@ -237,6 +237,7 @@ import 'package:app_tbk/features/notification/screens/notification_history_scree
 import 'package:app_tbk/features/profile/screens/profile_screen.dart';
 import 'package:app_tbk/features/schedule/screens/schedule_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../features/attendance/screens/attendance_history_screen.dart';
@@ -380,6 +381,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         case 2:
           print('HIỆU ỨNG XONG → BẮT ĐẦU LOAD TAB 2');
           _notificationKey.currentState?.loadTab(0);
+          _refreshUnreadCount();
           break;
         case 3:
           print('HIỆU ỨNG XONG → BẮT ĐẦU LOAD TAB 3');
@@ -418,6 +420,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         onTabSelected: (index) {
           _notificationKey.currentState?.loadTab(index);
         },
+        onNotificationChanged: _refreshUnreadCount,
       ),
       ProfileScreen(
         key:
@@ -430,116 +433,100 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       ),
     ];
 
-    return Scaffold(
-      body: AnimatedBuilder(
-        animation: _animationController,
-        builder: (context, child) {
-          return SlideTransition(
-            position: _slideAnimation,
-            child: IndexedStack(
-              index: _chiSoDuocChon,
-              children: _cacWidget,
-            ),
-          );
-        },
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _chiSoDuocChon,
-        selectedItemColor: const Color(0xFF6366F1),
-        unselectedItemColor: Colors.grey,
-        onTap: _khiChon,
-        type: BottomNavigationBarType.fixed,
-        elevation: 8,
-        items: [
-          BottomNavigationBarItem(
-            icon: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
-              child: Icon(
-                _chiSoDuocChon == 0 ? Icons.calendar_today : Icons.calendar_today_outlined,
-                key: ValueKey(_chiSoDuocChon == 0),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await SystemNavigator.pop();
+      },
+      child: Scaffold(
+        body: AnimatedBuilder(
+          animation: _animationController,
+          builder: (context, child) {
+            return SlideTransition(
+              position: _slideAnimation,
+              child: IndexedStack(
+                index: _chiSoDuocChon,
+                children: _cacWidget,
               ),
-            ),
-            label: 'home.title'.tr(),
-          ),
-          // BottomNavigationBarItem(
-          //   icon: AnimatedSwitcher(
-          //     duration: const Duration(milliseconds: 300),
-          //     transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
-          //     child: Icon(
-          //       _chiSoDuocChon == 1 ? Icons.fingerprint : Icons.fingerprint_outlined,
-          //       key: ValueKey(_chiSoDuocChon == 1),
-          //     ),
-          //   ),
-          //   label: 'Điểm danh',
-          // ),
-          // BottomNavigationBarItem(
-          //   icon: Icon(Icons.qr_code_scanner_outlined),
-          //
-          //   label: 'Check-in',
-          // ),
-
-          BottomNavigationBarItem(
-            icon: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
-              child: Icon(
-                _chiSoDuocChon == 1 ? Icons.list_alt : Icons.list_alt_outlined,
-                key: ValueKey(_chiSoDuocChon == 1),
-              ),
-            ),
-              label: 'Chức năng',
-          ),
-          BottomNavigationBarItem(
-            icon: badges.Badge(
-              badgeStyle: badges.BadgeStyle(
-                badgeColor: Colors.red.shade300,  // Xám đậm, rất hợp dark mode
-                // Hoặc các tông xám khác:
-                // Colors.grey.shade800 → xám rất đậm
-                // Color(0xFF424242) → xám trung tính chuẩn Material
-                // Color(0xFF555555) → xám hơi sáng hơn một chút
-                // borderSide: const BorderSide(color: Colors.white, width: 1.8),
-                elevation: 3,
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-
-              ),
-              badgeContent: Text(
-                _unreadCount > 99 ? '99+' : _unreadCount.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              badgeAnimation: const badges.BadgeAnimation.scale(
-                animationDuration: Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-              ),
-              showBadge: _unreadCount > 0,
-              position: badges.BadgePosition.topEnd(top: -5, end: -10),
-              child: AnimatedSwitcher(
+            );
+          },
+        ),
+        bottomNavigationBar: BottomNavigationBar(
+          currentIndex: _chiSoDuocChon,
+          selectedItemColor: const Color(0xFF6366F1),
+          unselectedItemColor: Colors.grey,
+          onTap: _khiChon,
+          type: BottomNavigationBarType.fixed,
+          elevation: 8,
+          items: [
+            BottomNavigationBarItem(
+              icon: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
                 transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
                 child: Icon(
-                  _chiSoDuocChon == 2 ? Icons.notifications_active : Icons.notifications_outlined,
-                  key: ValueKey(_chiSoDuocChon == 2),
+                  _chiSoDuocChon == 0 ? Icons.calendar_today : Icons.calendar_today_outlined,
+                  key: ValueKey(_chiSoDuocChon == 0),
                 ),
               ),
+              label: 'home.title'.tr(),
             ),
-            label: 'notification.title'.tr(),
-          ),
-          BottomNavigationBarItem(
-            icon: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
-              child: Icon(
-                _chiSoDuocChon == 3 ? Icons.person : Icons.person_outline,
-                key: ValueKey(_chiSoDuocChon == 3),
+            BottomNavigationBarItem(
+              icon: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
+                child: Icon(
+                  _chiSoDuocChon == 1 ? Icons.list_alt : Icons.list_alt_outlined,
+                  key: ValueKey(_chiSoDuocChon == 1),
+                ),
               ),
+              label: 'Chức năng',
             ),
-            label: 'profile.title'.tr(),
-          ),
-        ],
+            BottomNavigationBarItem(
+              icon: badges.Badge(
+                badgeStyle: badges.BadgeStyle(
+                  badgeColor: Colors.red.shade300,
+                  elevation: 3,
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                ),
+                badgeContent: Text(
+                  _unreadCount > 99 ? '99+' : _unreadCount.toString(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                badgeAnimation: const badges.BadgeAnimation.scale(
+                  animationDuration: Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                ),
+                showBadge: _unreadCount > 0,
+                position: badges.BadgePosition.topEnd(top: -5, end: -10),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
+                  child: Icon(
+                    _chiSoDuocChon == 2 ? Icons.notifications_active : Icons.notifications_outlined,
+                    key: ValueKey(_chiSoDuocChon == 2),
+                  ),
+                ),
+              ),
+              label: 'notification.title'.tr(),
+            ),
+            BottomNavigationBarItem(
+              icon: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (child, animation) => ScaleTransition(scale: animation, child: child),
+                child: Icon(
+                  _chiSoDuocChon == 3 ? Icons.person : Icons.person_outline,
+                  key: ValueKey(_chiSoDuocChon == 3),
+                ),
+              ),
+              label: 'profile.title'.tr(),
+            ),
+          ],
+        ),
       ),
     );
   }

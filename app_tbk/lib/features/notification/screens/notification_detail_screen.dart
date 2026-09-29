@@ -20,11 +20,7 @@ class NotificationDetailScreen extends StatefulWidget {
   State<NotificationDetailScreen> createState() => _NotificationDetailScreenState();
 }
 
-class _NotificationDetailScreenState extends State<NotificationDetailScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
+class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
   bool _isMarking = false;
   late NotificationHistory _notification;
 
@@ -33,56 +29,23 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen>
     super.initState();
     _notification = widget.notification;
 
-    // Setup animations
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-
-    _fadeAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeOut,
-    ));
-
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.1),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeOutCubic,
-    ));
-
-    _animationController.forward();
-
     // Tự động đánh dấu đã đọc nếu chưa đọc
     if (!_notification.is_read) {
       _markAsReadAutomatic();
     }
   }
 
-  @override
-  void dispose() {
-    _animationController.dispose();
-    super.dispose();
-  }
-
   Future<void> _markAsReadAutomatic() async {
     if (_isMarking || _notification.is_read) return;
 
-    setState(() => _isMarking = true);
+    _isMarking = true;
 
     try {
-      // Lưu context trước async để tránh lint error
       final BuildContext currentContext = context;
 
       // Gọi service đã có sẵn
-      await NotificationHistoryService.markAsRead(
-          currentContext, _notification.id);
+      await NotificationHistoryService.markAsRead(currentContext, _notification.id);
 
-      // Nếu thành công (không throw exception)
       if (!mounted) return;
 
       setState(() {
@@ -90,20 +53,10 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen>
         _isMarking = false;
       });
 
-      // Callback để cập nhật list bên ngoài (nếu có)
+      // Callback để cập nhật list bên ngoài
       widget.onMarkAsRead?.call(_notification);
 
       print('✅ Marked notification ${_notification.id} as read');
-
-      // Optional: Hiện SnackBar nhẹ nhàng (tùy bạn)
-      ScaffoldMessenger.of(currentContext).showSnackBar(
-        const SnackBar(
-          content: Text('Đã đánh dấu là đã đọc', style: TextStyle(color: Colors.white)),
-          duration: Duration(seconds: 2),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
     } catch (e) {
       print('❌ Error marking as read: $e');
 
@@ -303,11 +256,7 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen>
 
           // Content
           SliverToBoxAdapter(
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: SlideTransition(
-                position: _slideAnimation,
-                child: Column(
+            child: Column(
                   children: [
                     // Title Card
                     Container(
@@ -525,8 +474,6 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen>
                     const SizedBox(height: 20),
                   ],
                 ),
-              ),
-            ),
           ),
         ],
       ),

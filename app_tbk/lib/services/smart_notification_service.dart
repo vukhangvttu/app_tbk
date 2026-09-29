@@ -11,12 +11,18 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+import 'notification_tracking_service.dart';
 
 // Background handler
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   print('📱 Background Message: ${message.messageId}');
+
+  final notificationId = NotificationTrackingService.extractNotificationId(message.data);
+  if (notificationId != null) {
+    await NotificationTrackingService.reportDelivered(notificationId);
+  }
 }
 
 
@@ -266,35 +272,8 @@ class SmartNotificationService {
   }
 
   void _setupMessageHandlers() {
-    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
-    _checkInitialMessage();
-  }
-
-  Future<void> _handleForegroundMessage(RemoteMessage message) async {
-    print('📬 Foreground message: ${message.notification?.title}');
-
-    await _localNotifications.show(
-      message.notification.hashCode,
-      message.notification?.title,
-      message.notification?.body,
-      NotificationDetails(
-        android: AndroidNotificationDetails(
-          message.data['channel'] ?? 'schedule_channel',
-          message.data['channelName'] ?? 'Thông báo',
-          importance: Importance.high,
-          priority: Priority.high,
-          icon: '@mipmap/ic_launcher',
-        ),
-        iOS: const DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-        ),
-      ),
-      payload: jsonEncode(message.data),
-    );
+    // Lưu ý: Các sự kiện tin nhắn FCM trực tiếp (foreground/background)
+    // được xử lý duy nhất bởi SimpleFirebaseService để tránh hiển thị trùng lặp thông báo local.
   }
 
   void _handleNotificationTap(dynamic response) {
@@ -306,9 +285,18 @@ class SmartNotificationService {
     }
 
     if (payload != null) {
-      final data = jsonDecode(payload);
-      print('👆 Notification tapped: ${data['type']}');
-      // TODO: Navigate to appropriate screen
+      try {
+        final data = jsonDecode(payload);
+        print('👆 Notification tapped: ${data['type']}');
+        if (data is Map<String, dynamic>) {
+          final notificationId = NotificationTrackingService.extractNotificationId(data);
+          if (notificationId != null) {
+            NotificationTrackingService.reportOpened(notificationId);
+          }
+        }
+      } catch (e) {
+        print('Lỗi parse payload tap notification: $e');
+      }
     }
   }
 

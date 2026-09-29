@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:app_tbk/config/api_constants.dart';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:app_tbk/features/auth/controllers/login_controller.dart';
 import 'package:flutter/material.dart';
@@ -78,6 +79,11 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isGoogleLoading = false;
 
   Future<void> _handleGoogleLogin() async {
+    if (!await AuthService.hasInternetConnection()) {
+      _showErrorDialog('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+      return;
+    }
+
     setState(() => _isGoogleLoading = true);
     try {
       final GoogleSignInAccount? account = await _googleSignIn.signIn();
@@ -90,8 +96,8 @@ class _LoginScreenState extends State<LoginScreen> {
       final GoogleSignInAuthentication auth = await account.authentication;
       final String? idToken = auth.idToken;
 
-      if (idToken == null) {
-        throw Exception('Không lấy được idToken từ Google');
+      if (idToken == null || idToken.isEmpty) {
+        throw Exception('Không lấy được token từ Google. Vui lòng kiểm tra lại kết nối mạng.');
       }
 
       // Gửi idToken lên backend để xác thực + đổi lấy JWT nội bộ
@@ -116,7 +122,19 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isGoogleLoading = false);
-        _showSnackbar('', isError: true);
+        final errorMsg = e.toString();
+        if (e is NoInternetException ||
+            errorMsg.contains('Không có kết nối') ||
+            errorMsg.contains('SocketException') ||
+            errorMsg.contains('ClientException') ||
+            errorMsg.contains('network_error') ||
+            errorMsg.contains('Internet')) {
+          _showErrorDialog('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+        } else if (e is GoogleAccountNotLinkedException || errorMsg.contains('chưa được liên kết')) {
+          _showErrorDialog('Email Google chưa được liên kết với tài khoản sinh viên.');
+        } else {
+          _showErrorDialog(errorMsg.replaceAll('Exception: ', ''));
+        }
       }
     }
   }
@@ -297,10 +315,14 @@ class _LoginScreenState extends State<LoginScreen> {
             _showErrorDialog('Thông tin đăng nhập không chính xác');
           } else if (errorMsg.contains('timeout')) {
             _showErrorDialog('Kết nối máy chủ quá thời gian phản hồi, vui lòng thử lại.');
-          } else if (errorMsg.contains('kết nối') || errorMsg.contains('SocketException')) {
-            _showErrorDialog('Không thể kết nối đến máy chủ, vui lòng kiểm tra mạng.');
+          } else if (e is NoInternetException ||
+              errorMsg.contains('kết nối') ||
+              errorMsg.contains('SocketException') ||
+              errorMsg.contains('ClientException') ||
+              errorMsg.contains('Internet')) {
+            _showErrorDialog('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
           } else {
-            _showErrorDialog('Lỗi không xác định: $errorMsg');
+            _showErrorDialog('Lỗi không xác định: ${errorMsg.replaceAll('Exception: ', '')}');
           }
         }
       }
@@ -713,109 +735,116 @@ class _LoginScreenState extends State<LoginScreen> {
     final keyboardHeight = MediaQuery.of(context).viewInsets.bottom;
     final isKeyboardVisible = keyboardHeight > 0;
 
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      body: GestureDetector(
-        onTap: () => FocusScope.of(context).unfocus(),
-        child: Container(
-          height: size.height,
-          color: theme.scaffoldBackgroundColor,
-          child: SafeArea(
-            child: Stack(
-              children: [
-                // Background decoration
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  height: size.height * 0.4,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 300),
-                    opacity: isKeyboardVisible ? 0.3 : 0.6,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            theme.scaffoldBackgroundColor.withOpacity(0),
-                            isDark
-                                ? const Color(0xFF6366F1).withOpacity(0.03)
-                                : const Color(0xFF6366F1).withOpacity(0.05),
-                          ],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await SystemNavigator.pop();
+      },
+      child: Scaffold(
+        resizeToAvoidBottomInset: false,
+        body: GestureDetector(
+          onTap: () => FocusScope.of(context).unfocus(),
+          child: Container(
+            height: size.height,
+            color: theme.scaffoldBackgroundColor,
+            child: SafeArea(
+              child: Stack(
+                children: [
+                  // Background decoration
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    height: size.height * 0.4,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: isKeyboardVisible ? 0.3 : 0.6,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              theme.scaffoldBackgroundColor.withOpacity(0),
+                              isDark
+                                  ? const Color(0xFF6366F1).withOpacity(0.03)
+                                  : const Color(0xFF6366F1).withOpacity(0.05),
+                            ],
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
 
-                // Decorative circles
-                if (!isKeyboardVisible) ...[
-                  Positioned(
-                    top: -50,
-                    right: -50,
-                    child: Container(
-                      width: 200,
-                      height: 200,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            const Color(0xFF6366F1).withOpacity(0.1),
-                            const Color(0xFF6366F1).withOpacity(0),
-                          ],
+                  // Decorative circles
+                  if (!isKeyboardVisible) ...[
+                    Positioned(
+                      top: -50,
+                      right: -50,
+                      child: Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              const Color(0xFF6366F1).withOpacity(0.1),
+                              const Color(0xFF6366F1).withOpacity(0),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    bottom: -80,
-                    left: -80,
-                    child: Container(
-                      width: 250,
-                      height: 250,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            const Color(0xFF8B5CF6).withOpacity(0.08),
-                            const Color(0xFF8B5CF6).withOpacity(0),
-                          ],
+                    Positioned(
+                      bottom: -80,
+                      left: -80,
+                      child: Container(
+                        width: 250,
+                        height: 250,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              const Color(0xFF8B5CF6).withOpacity(0.08),
+                              const Color(0xFF8B5CF6).withOpacity(0),
+                            ],
+                          ),
                         ),
+                      ),
+                    ),
+                  ],
+
+                  // Content chính
+                  Positioned.fill(
+                    child: SingleChildScrollView(
+                      controller: _scrollController,
+                      physics: const ClampingScrollPhysics(),
+                      padding: EdgeInsets.only(
+                        left: 24,
+                        right: 24,
+                        top: 24,
+                        bottom: isKeyboardVisible ? keyboardHeight + 16 : 24,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildHeader(isDark, size),
+                          const SizedBox(height: 12),
+                          _buildLoginForm(theme, isDark, size),
+                          _buildGoogleLoginSection(theme, isDark),
+                          const SizedBox(height: 12),
+                          // _buildRegisterLink(isDark), // ✅ THÊM NÚT ĐĂNG KÝ
+                          // const SizedBox(height: 1),
+                          // _buildBiometricSection(theme, isDark),
+
+
+                        ],
                       ),
                     ),
                   ),
                 ],
-
-                // Content chính
-                Positioned.fill(
-                  child: SingleChildScrollView(
-                    controller: _scrollController,
-                    physics: const ClampingScrollPhysics(),
-                    padding: EdgeInsets.only(
-                      left: 24,
-                      right: 24,
-                      top: 24,
-                      bottom: isKeyboardVisible ? keyboardHeight + 16 : 24,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildHeader(isDark, size),
-                        const SizedBox(height: 12),
-                        _buildLoginForm(theme, isDark, size),
-                        _buildGoogleLoginSection(theme, isDark),
-                        const SizedBox(height: 12),
-                        // _buildRegisterLink(isDark), // ✅ THÊM NÚT ĐĂNG KÝ
-                        // const SizedBox(height: 1),
-                        // _buildBiometricSection(theme, isDark),
-
-
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),

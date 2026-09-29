@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/notification/screens/notification_detail_screen.dart';
 import 'package:app_tbk/features/notification/services/notification_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import '../../auth/services/auth_service.dart';
 
 class NotificationHistory {
   final int id;
@@ -30,14 +28,143 @@ class NotificationHistory {
 
   factory NotificationHistory.fromJson(Map<String, dynamic> json) {
     return NotificationHistory(
-      id: json['id'],
-      mssv: json['mssv'],
-      title: json['title'],
-      body: json['body'],
-      type: json['type'],
-      timestamp: DateTime.parse(json['timestamp']),
-      is_read: json['is_read'] ?? false,
+      id: json['id'] is int ? json['id'] : (int.tryParse(json['id']?.toString() ?? '0') ?? 0),
+      mssv: json['mssv']?.toString() ?? '',
+      title: json['title']?.toString() ?? json['tieuDe']?.toString() ?? '',
+      body: json['body']?.toString() ?? json['noiDung']?.toString() ?? '',
+      type: json['type']?.toString() ?? json['loaiLich']?.toString() ?? '',
+      timestamp: _parseTimestamp(json),
+      is_read: json['is_read'] == true ||
+          json['is_read'] == 1 ||
+          json['is_read']?.toString() == 'true' ||
+          json['isRead'] == true ||
+          json['isRead'] == 1,
     );
+  }
+
+  static DateTime _parseTimestamp(Map<String, dynamic> json) {
+    final rawValue = json['timestamp'] ??
+        json['created_at'] ??
+        json['createdAt'] ??
+        json['sentAt'] ??
+        json['sent_at'] ??
+        json['ngayTao'] ??
+        json['ngay_tao'] ??
+        json['time'] ??
+        json['date'];
+
+    if (rawValue == null) {
+      return DateTime.now();
+    }
+
+    if (rawValue is DateTime) {
+      return rawValue.isUtc
+          ? DateTime(
+              rawValue.year,
+              rawValue.month,
+              rawValue.day,
+              rawValue.hour,
+              rawValue.minute,
+              rawValue.second,
+              rawValue.millisecond,
+              rawValue.microsecond,
+            )
+          : rawValue;
+    }
+
+    // Handle numeric timestamp (epoch milliseconds or seconds)
+    if (rawValue is num) {
+      final val = rawValue.toInt();
+      if (val > 100000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(val).toLocal();
+      } else if (val > 0) {
+        return DateTime.fromMillisecondsSinceEpoch(val * 1000).toLocal();
+      }
+    }
+
+    // Handle List timestamp [year, month, day, hour, minute, second] (Spring Boot Jackson default for LocalDateTime)
+    if (rawValue is List && rawValue.isNotEmpty) {
+      try {
+        final year = rawValue.length > 0 ? (rawValue[0] as num).toInt() : 1970;
+        final month = rawValue.length > 1 ? (rawValue[1] as num).toInt() : 1;
+        final day = rawValue.length > 2 ? (rawValue[2] as num).toInt() : 1;
+        final hour = rawValue.length > 3 ? (rawValue[3] as num).toInt() : 0;
+        final minute = rawValue.length > 4 ? (rawValue[4] as num).toInt() : 0;
+        final second = rawValue.length > 5 ? (rawValue[5] as num).toInt() : 0;
+        return DateTime(year, month, day, hour, minute, second);
+      } catch (_) {}
+    }
+
+    final strVal = rawValue.toString().trim();
+    if (strVal.isEmpty) return DateTime.now();
+
+    // Check numeric string
+    final numVal = int.tryParse(strVal);
+    if (numVal != null) {
+      if (numVal > 100000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(numVal).toLocal();
+      } else if (numVal > 0) {
+        return DateTime.fromMillisecondsSinceEpoch(numVal * 1000).toLocal();
+      }
+    }
+
+    // Xử lý chuỗi thời gian: Bỏ hậu tố 'Z'/'z' nếu có.
+    // Vì server trả về giờ VN thật (ICT), nhưng đôi khi Jackson/Spring Boot tự gắn nhãn 'Z'.
+    // Nếu giữ 'Z', Dart sẽ parse thành UTC, sau đó .toLocal() sẽ cộng thêm +7 giờ (múi giờ VN),
+    // khiến 13:02 chuyển thành 20:02 (tương lai ~6-7 giờ).
+    final cleanStr = strVal.replaceAll(RegExp(r'[Zz]$'), '').trim();
+
+    // Standard DateTime parse (ISO 8601)
+    final parsed = DateTime.tryParse(cleanStr);
+    if (parsed != null) {
+      if (parsed.isUtc) {
+        return DateTime(
+          parsed.year,
+          parsed.month,
+          parsed.day,
+          parsed.hour,
+          parsed.minute,
+          parsed.second,
+          parsed.millisecond,
+          parsed.microsecond,
+        );
+      }
+      return parsed;
+    }
+
+    // Custom format parsing (e.g. "dd/MM/yyyy HH:mm:ss" or "yyyy-MM-dd HH:mm:ss")
+    try {
+      if (cleanStr.contains('/')) {
+        final parts = cleanStr.split(' ');
+        final dateParts = parts[0].split('/');
+        if (dateParts.length == 3) {
+          int day, month, year;
+          if (dateParts[0].length == 4) {
+            year = int.parse(dateParts[0]);
+            month = int.parse(dateParts[1]);
+            day = int.parse(dateParts[2]);
+          } else {
+            day = int.parse(dateParts[0]);
+            month = int.parse(dateParts[1]);
+            year = int.parse(dateParts[2]);
+          }
+          int hour = 0, minute = 0, second = 0;
+          if (parts.length > 1) {
+            final timeParts = parts[1].split(':');
+            if (timeParts.length >= 2) {
+              hour = int.parse(timeParts[0]);
+              minute = int.parse(timeParts[1]);
+              if (timeParts.length >= 3) {
+                second = int.parse(timeParts[2].split('.')[0]);
+              }
+            }
+          }
+          return DateTime(year, month, day, hour, minute, second);
+        }
+      }
+    } catch (_) {}
+
+    return DateTime.now();
   }
 
   NotificationHistory copyWith({bool? read}) {
@@ -86,7 +213,17 @@ class NotificationHistory {
     final now = DateTime.now();
     final difference = now.difference(timestamp);
 
-    if (difference.inMinutes < 1) {
+    // Nếu khoảng lệch âm (do chênh lệch vài giây giữa server clock & device clock, hoặc thông báo vừa phát ra)
+    if (difference.isNegative) {
+      final absMinutes = difference.abs().inMinutes;
+      if (absMinutes < 60) {
+        return 'Vừa xong';
+      } else {
+        return DateFormat('dd/MM/yyyy HH:mm').format(timestamp);
+      }
+    }
+
+    if (difference.inSeconds < 60) {
       return 'Vừa xong';
     } else if (difference.inMinutes < 60) {
       return '${difference.inMinutes} phút trước';
@@ -102,7 +239,13 @@ class NotificationHistory {
 
 class NotificationHistoryScreen extends StatefulWidget {
   final Function(int)? onTabSelected;
-  const NotificationHistoryScreen({Key? key, this.onTabSelected}) : super(key: key);
+  final VoidCallback? onNotificationChanged;
+
+  const NotificationHistoryScreen({
+    Key? key,
+    this.onTabSelected,
+    this.onNotificationChanged,
+  }) : super(key: key);
 
   @override
   NotificationHistoryScreenState createState() => NotificationHistoryScreenState();
@@ -115,6 +258,31 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   List<NotificationHistory> _classNotifications = [];
   List<NotificationHistory> _examNotifications = [];
   List<NotificationHistory> _reminderNotifications = [];
+
+  void _updateNotificationState(NotificationHistory updatedNotif) {
+    bool changed = false;
+
+    final allIndex = _allNotifications.indexWhere((n) => n.id == updatedNotif.id);
+    if (allIndex != -1) {
+      if (!_allNotifications[allIndex].is_read && updatedNotif.is_read) {
+        changed = true;
+      }
+      _allNotifications[allIndex] = updatedNotif;
+    }
+
+    final classIndex = _classNotifications.indexWhere((n) => n.id == updatedNotif.id);
+    if (classIndex != -1) _classNotifications[classIndex] = updatedNotif;
+
+    final examIndex = _examNotifications.indexWhere((n) => n.id == updatedNotif.id);
+    if (examIndex != -1) _examNotifications[examIndex] = updatedNotif;
+
+    final reminderIndex = _reminderNotifications.indexWhere((n) => n.id == updatedNotif.id);
+    if (reminderIndex != -1) _reminderNotifications[reminderIndex] = updatedNotif;
+
+    if (changed) {
+      widget.onNotificationChanged?.call();
+    }
+  }
 
   late TabController _tabController;
   int _currentTabIndex = 0;
@@ -182,8 +350,8 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     }
   }
 
-  Future<void> _loadData() async {
-    if (_isDataLoaded || _isLoading) return;
+  Future<void> _loadData({bool force = false}) async {
+    if ((_isDataLoaded && !force) || _isLoading) return;
 
     setState(() {
       _isLoading = true;
@@ -205,6 +373,8 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         _isLoading = false;
         _hasError = false;
       });
+
+      widget.onNotificationChanged?.call();
 
     } on TimeoutException catch (_) {
       // ✅ TẮT loading TRƯỚC KHI hiện dialog
@@ -235,12 +405,22 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         _hasError = true;
       });
 
+      final isNetworkError = e is NoInternetException ||
+          e.toString().contains('Không có kết nối') ||
+          e.toString().contains('SocketException') ||
+          e.toString().contains('ClientException');
+
+      final title = isNetworkError ? 'Không có kết nối mạng' : 'Lỗi tải dữ liệu';
+      final message = isNetworkError
+          ? 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.'
+          : e.toString().replaceAll('Exception: ', '');
+
       // ✅ Đợi 1 frame để UI cập nhật xong
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _showErrorDialog(
-            'Lỗi tải dữ liệu',
-            e.toString(),
+            title,
+            message,
             onRetry: _loadData,
           );
         }
@@ -304,6 +484,8 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         _hasError = false;
       });
 
+      widget.onNotificationChanged?.call();
+
     } on TimeoutException catch (_) {
       // ✅ TẮT loading TRƯỚC KHI hiện dialog
       if (!mounted) return;
@@ -333,12 +515,22 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         _hasError = true;
       });
 
+      final isNetworkError = e is NoInternetException ||
+          e.toString().contains('Không có kết nối') ||
+          e.toString().contains('SocketException') ||
+          e.toString().contains('ClientException');
+
+      final title = isNetworkError ? 'Không có kết nối mạng' : 'Lỗi tải dữ liệu';
+      final message = isNetworkError
+          ? 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.'
+          : e.toString().replaceAll('Exception: ', '');
+
       // ✅ Đợi 1 frame để UI cập nhật xong
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _showErrorDialog(
-            'Lỗi tải dữ liệu',
-            e.toString(),
+            title,
+            message,
             onRetry: _loadData,
           );
         }
@@ -534,32 +726,25 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
   Future<void> _markAllAsRead() async {
     try {
-      final mssv = await AuthService.getSavedMssv() ?? '7231620971';
-      final response = await http.put(
-        Uri.parse('http://192.168.0.9:8080/notification-service/api/notification_history/$mssv/read-all'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 15));
+      await NotificationHistoryService.markAllAsRead(context);
 
-      if (response.statusCode == 200) {
-        await _loadData();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.white),
-                  const SizedBox(width: 8),
-                  const Text('Đã đánh dấu tất cả là đã đọc'),
-                ],
-              ),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      await _loadData(force: true);
+      widget.onNotificationChanged?.call();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 8),
+                const Text('Đã đánh dấu tất cả là đã đọc'),
+              ],
             ),
-          );
-        }
-      } else {
-        throw Exception('Server trả về mã lỗi ${response.statusCode}');
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
       }
     } catch (e) {
       print('❌ Error marking all as read: $e');
@@ -740,70 +925,63 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
     // Từ đây trở đi chỉ chạy khi người dùng chọn "Xóa"
     try {
-      final mssv = await AuthService.getSavedMssv() ?? '7231620971';
-      final response = await http.delete(
-        Uri.parse('http://192.168.0.9:8080/notification-service/api/notification_history/$mssv/${notification.id}'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      await NotificationHistoryService.deleteNotification(context, notification.id);
 
-      if (response.statusCode == 200) {
-        // ✅ Xóa thành công -> reload data
-        await _loadData();
+      // ✅ Xóa thành công -> reload data
+      await _loadData(force: true);
+      widget.onNotificationChanged?.call();
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Container(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.check_circle_rounded,
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Container(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_circle_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Đã xóa thông báo',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
                         color: Colors.white,
-                        size: 20,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Đã xóa thông báo',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              backgroundColor: Colors.green.shade600,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              margin: const EdgeInsets.all(16),
-              duration: const Duration(seconds: 3),
-              elevation: 6,
             ),
-          );
-        }
-      } else {
-        throw Exception('Server trả về mã lỗi ${response.statusCode}');
+            backgroundColor: Colors.green.shade600,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            margin: const EdgeInsets.all(16),
+            duration: const Duration(seconds: 3),
+            elevation: 6,
+          ),
+        );
       }
     } catch (e) {
       print('❌ Error deleting notification: $e');
-
       if (mounted) {
         _showErrorDialog(
           'Lỗi xóa thông báo',
           'Không thể xóa thông báo. Vui lòng thử lại.',
+          onRetry: () => _deleteNotification(notification),
         );
       }
     }
@@ -844,31 +1022,24 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
     if (confirm == true) {
       try {
-        final mssv = await AuthService.getSavedMssv() ;
-        final response = await http.delete(
-          Uri.parse('http://192.168.0.9:8080/notification-service/api/notification_history/$mssv'),
-          headers: {'Content-Type': 'application/json'},
-        ).timeout(const Duration(seconds: 15));
+        await NotificationHistoryService.deleteAllNotifications(context);
 
-        if (response.statusCode == 200) {
-          await _loadData();
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.delete_sweep, color: Colors.white),
-                    const SizedBox(width: 8),
-                    const Text('Đã xóa tất cả thông báo', style: TextStyle(color: Colors.white)),
-                  ],
-                ),
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        await _loadData(force: true);
+        widget.onNotificationChanged?.call();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.delete_sweep, color: Colors.white),
+                  const SizedBox(width: 8),
+                  const Text('Đã xóa tất cả thông báo', style: TextStyle(color: Colors.white)),
+                ],
               ),
-            );
-          }
-        } else {
-          throw Exception('Server trả về mã lỗi ${response.statusCode}');
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          );
         }
       } catch (e) {
         print('❌ Error clearing all: $e');
@@ -1355,9 +1526,10 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
           await NotificationHistoryService.deleteNotification(cardContext, notification.id);
 
           // Chỉ reload và show SnackBar nếu widget vẫn còn mounted
-            await _loadData();
+          await _loadData(force: true);
+          widget.onNotificationChanged?.call();
 
-            if (mounted) {
+          if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Container(
@@ -1480,83 +1652,23 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
           onTap: () async {
             final updatedNotification = await Navigator.push<NotificationHistory>(
               context,
-              PageRouteBuilder(
-                pageBuilder: (context, animation, secondaryAnimation) =>
-                    NotificationDetailScreen(
-                      notification: notification,
-                      onMarkAsRead: (updatedNotif) {
-                        // Cập nhật trạng thái trong list
-                        setState(() {
-                          final allIndex = _allNotifications.indexWhere((n) => n.id == updatedNotif.id);
-                          if (allIndex != -1) {
-                            _allNotifications[allIndex] = updatedNotif;
-                          }
-
-                          final classIndex = _classNotifications.indexWhere((n) => n.id == updatedNotif.id);
-                          if (classIndex != -1) {
-                            _classNotifications[classIndex] = updatedNotif;
-                          }
-
-                          final examIndex = _examNotifications.indexWhere((n) => n.id == updatedNotif.id);
-                          if (examIndex != -1) {
-                            _examNotifications[examIndex] = updatedNotif;
-                          }
-
-                          final reminderIndex = _reminderNotifications.indexWhere((n) => n.id == updatedNotif.id);
-                          if (reminderIndex != -1) {
-                            _reminderNotifications[reminderIndex] = updatedNotif;
-                          }
-                        });
-                      },
-                    ),
-                transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                  // Hiệu ứng slide từ phải sang trái + fade
-                  const begin = Offset(1.0, 0.0);
-                  const end = Offset.zero;
-                  const curve = Curves.easeInOutCubic;
-
-                  var slideTween = Tween(begin: begin, end: end).chain(
-                    CurveTween(curve: curve),
-                  );
-                  var fadeTween = Tween(begin: 0.0, end: 1.0).chain(
-                    CurveTween(curve: curve),
-                  );
-
-                  return SlideTransition(
-                    position: animation.drive(slideTween),
-                    child: FadeTransition(
-                      opacity: animation.drive(fadeTween),
-                      child: child,
-                    ),
-                  );
-                },
-                transitionDuration: const Duration(milliseconds: 400),
-                reverseTransitionDuration: const Duration(milliseconds: 350),
+              MaterialPageRoute(
+                builder: (_) => NotificationDetailScreen(
+                  notification: notification,
+                  onMarkAsRead: (updatedNotif) {
+                    if (mounted) {
+                      setState(() {
+                        _updateNotificationState(updatedNotif);
+                      });
+                    }
+                  },
+                ),
               ),
             );
 
-            // Cập nhật nếu có thay đổi trạng thái từ detail screen
-            if (updatedNotification != null && updatedNotification.is_read != notification.is_read) {
+            if (updatedNotification != null && mounted) {
               setState(() {
-                final allIndex = _allNotifications.indexWhere((n) => n.id == updatedNotification.id);
-                if (allIndex != -1) {
-                  _allNotifications[allIndex] = updatedNotification;
-                }
-
-                final classIndex = _classNotifications.indexWhere((n) => n.id == updatedNotification.id);
-                if (classIndex != -1) {
-                  _classNotifications[classIndex] = updatedNotification;
-                }
-
-                final examIndex = _examNotifications.indexWhere((n) => n.id == updatedNotification.id);
-                if (examIndex != -1) {
-                  _examNotifications[examIndex] = updatedNotification;
-                }
-
-                final reminderIndex = _reminderNotifications.indexWhere((n) => n.id == updatedNotification.id);
-                if (reminderIndex != -1) {
-                  _reminderNotifications[reminderIndex] = updatedNotification;
-                }
+                _updateNotificationState(updatedNotification);
               });
             }
           },

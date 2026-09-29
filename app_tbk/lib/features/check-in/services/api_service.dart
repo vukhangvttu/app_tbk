@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:http/http.dart' as http;
 import '../models/event_model.dart';
 
@@ -20,6 +22,8 @@ class ApiService {
       } else {
         throw Exception('Không thể tải danh sách sự kiện');
       }
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     } catch (e) {
       print('Lỗi lấy sự kiện: $e');
       rethrow;

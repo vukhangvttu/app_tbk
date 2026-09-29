@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:app_tbk/features/notification-setting/models/notification.dart';
+import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:app_tbk/features/notification-setting/screens/notification_dialog.dart';
 import 'package:app_tbk/services/smart_notification_service.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart';
+                                                                                                                                                      import 'package:flutter/material.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -21,12 +22,36 @@ class NotificationSettingsScreen extends StatefulWidget {
 
 class _NotificationSettingsScreenState extends State<NotificationSettingsScreen> {
   final _service = SmartNotificationService.instance;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _playingSoundId;
+
   AppNotificationSettings? _settings;
   bool _loading = true;
   bool _isLoading = false;
   bool _hasUnsavedChanges = false;
-  String? _fcmToken;
-  bool _hasFcmToken = false;
+
+  final List<Map<String, String>> _soundOptions = [
+    {
+      'id': 'system',
+      'title': 'Theo hệ thống',
+      'description': 'Mặc định theo cài đặt âm thanh điện thoại',
+    },
+    {
+      'id': 'sound_gentle',
+      'title': 'Âm 1: Nhẹ nhàng',
+      'description': 'Âm báo êm dịu, nhẹ nhàng',
+    },
+    {
+      'id': 'sound_energetic',
+      'title': 'Âm 2: Sôi động',
+      'description': 'Giai điệu vui tươi, năng động',
+    },
+    {
+      'id': 'sound_bell',
+      'title': 'Âm 3: Chuông báo',
+      'description': 'Tiếng chuông cổ điển rõ ràng',
+    },
+  ];
 
   @override
   void initState() {
@@ -34,30 +59,24 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
     _initializeScreen();
   }
 
-  Future<void> _initializeScreen() async {
-    await _checkFcmToken();
-    if (_hasFcmToken) {
-      await _loadSettings();
-    } else {
-      setState(() => _loading = false);
-    }
+  @override
+  void dispose() {
+    _audioPlayer.stop();
+    _audioPlayer.dispose();
+    super.dispose();
   }
 
-  Future<void> _checkFcmToken() async {
-    try {
-      _fcmToken = await FirebaseMessaging.instance.getToken();
-      setState(() {
-        _hasFcmToken = _fcmToken != null && _fcmToken!.isNotEmpty;
-      });
-    } catch (e) {
-      setState(() => _hasFcmToken = false);
-    }
+  Future<void> _initializeScreen() async {
+    await _loadSettings();
   }
 
   Future<void> _loadSettings() async {
     try {
       final mssv = await AuthService.getSavedMssv() ?? '0';
+      print('🔄 Đang gọi lấy Settings cho MSSV: $mssv');
       final settings = await _service.getSettings(mssv);
+      
+      print('✅ Đã load Settings: ${settings != null ? jsonEncode(settings.toJson()) : "NULL"}');
 
       if (mounted) {
         setState(() {
@@ -67,6 +86,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         });
       }
     } catch (e) {
+      print('❌ Lỗi _loadSettings: $e');
       if (mounted) {
         setState(() {
           _settings = _service.defaultSettings;
@@ -78,16 +98,22 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
   }
 
   void _onSettingsChanged(AppNotificationSettings newSettings) {
-    if (!_hasFcmToken) return;
     setState(() {
       _settings = newSettings;
       _hasUnsavedChanges = true;
     });
   }
 
+  String _getSoundTitle(String soundId) {
+    final found = _soundOptions.firstWhere(
+      (element) => element['id'] == soundId,
+      orElse: () => _soundOptions.first,
+    );
+    return found['title'] ?? 'Theo hệ thống';
+  }
 
   Future<void> _saveSettings() async {
-    if (!_hasFcmToken || _fcmToken == null || _settings == null) {
+    if (_settings == null) {
       showNotificationDialog(
         context,
         'Lỗi',
@@ -105,9 +131,27 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         throw Exception('Không tìm thấy thông tin sinh viên');
       }
 
+      String? idSinhVien = await AuthService.getIdSinhVien();
+      if (idSinhVien == null || idSinhVien.isEmpty) {
+        final token = await AuthService.getToken();
+        if (token != null && token.isNotEmpty) {
+          try {
+            final decodedToken = JwtDecoder.decode(token);
+            idSinhVien = decodedToken['id_sinh_vien']?.toString() ??
+                decodedToken['idSinhVien']?.toString();
+          } catch (e) {
+            print('❌ Lỗi decode token lấy id_sinh_vien: $e');
+          }
+        }
+      }
+
+      if (idSinhVien == null || idSinhVien.isEmpty) {
+        throw Exception('Không tìm thấy thông tin ID sinh viên');
+      }
+
       final Map<String, dynamic> payload = {
         'mssv': mssv,
-        'idsinhvien': "19719".toString(),
+        'idsinhvien': idSinhVien,
         'enabled': _settings!.enabled,
         'schedule_enabled': _settings!.scheduleEnabled,
         'schedule_hour': _settings!.scheduleHour,
@@ -117,6 +161,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         'exam_minute': _settings!.examMinute,
         'reminder_minutes': _settings!.reminderMinutes,
         'exam_reminder_days': _settings!.examReminderDays,
+        'notification_sound': _settings!.notificationSound,
       };
 
 
@@ -178,51 +223,6 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
       return Scaffold(
         appBar: AppBar(title: Text('notification_settings.title'.tr())),
         body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (!_hasFcmToken) {
-      return Scaffold(
-        backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
-        appBar: AppBar(
-          title: Text('notification_settings.title'.tr()),
-          elevation: 0,
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.notifications_off, size: 100, color: Colors.grey[400]),
-                const SizedBox(height: 24),
-                Text(
-                  'Thông báo không khả dụng',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Vui lòng kiểm tra kết nối và cấp quyền thông báo',
-                  style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 32),
-                ElevatedButton.icon(
-                  onPressed: () async {
-                    setState(() => _loading = true);
-                    await _initializeScreen();
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Thử lại'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
       );
     }
 
@@ -343,6 +343,25 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
                   ],
                 ),
 
+              const SizedBox(height: 16),
+
+              // Cài đặt âm thanh
+              if (_settings!.enabled)
+                _buildSection(
+                  isDark: isDark,
+                  title: '🎵 Âm thanh thông báo',
+                  enabled: _settings!.enabled,
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Âm báo'),
+                      subtitle: Text(_getSoundTitle(_settings!.notificationSound)),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _showSoundPickerBottomSheet,
+                    ),
+                  ],
+                ),
+
               const SizedBox(height: 32),
 
               // Save Button
@@ -355,7 +374,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
           // Loading Overlay
           if (_isLoading)
             Container(
-              color: Colors.black.withOpacity(0.5),
+              color: Colors.black.withValues(alpha: 0.5),
               child: const Center(
                 child: CircularProgressIndicator(color: Colors.white),
               ),
@@ -377,7 +396,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: (_settings!.enabled ? Colors.blue : Colors.grey).withOpacity(0.3),
+            color: (_settings!.enabled ? Colors.blue : Colors.grey).withValues(alpha: 0.3),
             blurRadius: 12,
             offset: const Offset(0, 6),
           ),
@@ -415,11 +434,8 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
           ),
           Switch(
             value: _settings!.enabled,
-            onChanged: _hasFcmToken
-                ? (v) => _onSettingsChanged(_settings!.copyWith(enabled: v))
-                : null,
-            activeColor: Colors.white,
-            activeTrackColor: Colors.white.withOpacity(0.3),
+            onChanged: (v) => _onSettingsChanged(_settings!.copyWith(enabled: v)),
+            activeTrackColor: Colors.white.withValues(alpha: 0.3),
           ),
         ],
       ),
@@ -439,7 +455,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -486,10 +502,120 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
         Switch(
           value: value,
           onChanged: onChanged,
-          activeColor: Colors.blue,
         ),
       ],
     );
+  }
+
+  void _showSoundPickerBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(16.0),
+                child: Text(
+                  'Chọn âm thanh thông báo',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const Divider(),
+              Expanded(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _soundOptions.length,
+                  itemBuilder: (context, index) {
+                    final option = _soundOptions[index];
+                    final isSelected = _settings!.notificationSound == option['id'];
+                    final isPlaying = _playingSoundId == option['id'];
+
+                    return ListTile(
+                      leading: Icon(
+                        option['id'] == 'system' ? Icons.notifications : Icons.music_note,
+                        color: isSelected ? Colors.blue : null,
+                      ),
+                      title: Text(
+                        option['title']!,
+                        style: TextStyle(
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          color: isSelected ? Colors.blue : null,
+                        ),
+                      ),
+                      subtitle: Text(option['description']!),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (option['id'] != 'system')
+                            IconButton(
+                              icon: Icon(
+                                isPlaying ? Icons.stop_circle : Icons.play_circle_outline,
+                                color: isPlaying ? Colors.red : Colors.grey,
+                              ),
+                              onPressed: () => _playSoundPreview(option['id']!),
+                            ),
+                          if (isSelected)
+                            const Icon(Icons.check_circle, color: Colors.blue),
+                        ],
+                      ),
+                      onTap: () {
+                        _onSettingsChanged(_settings!.copyWith(notificationSound: option['id']!));
+                        Navigator.pop(context);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    ).then((_) {
+      _audioPlayer.stop();
+      if (mounted) {
+        setState(() => _playingSoundId = null);
+      }
+    });
+  }
+
+  Future<void> _playSoundPreview(String soundId) async {
+    if (soundId == 'system') return;
+
+    if (_playingSoundId == soundId) {
+      await _audioPlayer.stop();
+      if (mounted) {
+        setState(() => _playingSoundId = null);
+      }
+      return;
+    }
+
+    try {
+      await _audioPlayer.stop();
+      
+      // Chơi file từ assets
+      String assetPath = 'sounds/$soundId.mp3';
+      await _audioPlayer.play(AssetSource(assetPath));
+      
+      if (mounted) {
+        setState(() => _playingSoundId = soundId);
+      }
+
+      _audioPlayer.onPlayerComplete.listen((event) {
+        if (mounted) {
+          setState(() => _playingSoundId = null);
+        }
+      });
+    } catch (e) {
+      print('Lỗi khi phát âm thanh: $e');
+      if (mounted) {
+        setState(() => _playingSoundId = null);
+      }
+    }
   }
 
   Widget _buildTimePicker({
@@ -622,7 +748,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
   }
 
   Future<void> _selectScheduleTime() async {
-    if (!_hasFcmToken || _settings == null) return;
+    if (_settings == null) return;
 
     final TimeOfDay? picked = await showTimePicker(
       context: context,
@@ -641,7 +767,7 @@ class _NotificationSettingsScreenState extends State<NotificationSettingsScreen>
   }
 
   Future<void> _selectExamTime() async {
-    if (!_hasFcmToken || _settings == null) return;
+    if (_settings == null) return;
 
     final TimeOfDay? picked = await showTimePicker(
       context: context,

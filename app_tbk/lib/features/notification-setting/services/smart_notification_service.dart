@@ -1,22 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui';
 import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:app_tbk/features/notification-setting/models/notification.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+import '../../../services/notification_tracking_service.dart';
 
 // Background handler
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  print('📱 Background Message: ${message.messageId}');
+  print('📱 Nhận được notification trong background: ${message.notification?.title ?? message.data['title'] ?? 'Không có tiêu đề'}');
+
+  final notificationId = NotificationTrackingService.extractNotificationId(message.data);
+  if (notificationId != null) {
+    await NotificationTrackingService.reportDelivered(notificationId);
+  }
 }
 
 
@@ -69,6 +73,9 @@ class SmartNotificationService {
 
       // Parse JSON an toàn
       final Map<String, dynamic> jsonMap = jsonDecode(response.body);
+      
+      // In ra log để xem API trả về gì
+      debugPrint('📥 GET Settings Response: ${response.body}');
 
       // Kiểm tra success
       final bool success = jsonMap['success'] == true;
@@ -193,78 +200,77 @@ class SmartNotificationService {
       onDidReceiveNotificationResponse: _handleNotificationTap,
     );
 
-    // Create notification channels
-    const List<AndroidNotificationChannel> channels = [
+    // Xóa các kênh cũ để tránh trùng lặp khi người dùng đổi âm thanh
+    final androidPlugin = _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    if (androidPlugin != null) {
+      final oldChannels = await androidPlugin.getNotificationChannels();
+      for (var channel in oldChannels ?? []) {
+        await androidPlugin.deleteNotificationChannel(channel.id);
+      }
+    }
+
+    // Đọc cài đặt từ API hoặc SharedPreferences (offline)
+    AppNotificationSettings? settings;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final String? settingsJson = prefs.getString('notification_settings');
+      if (settingsJson != null) {
+        settings = AppNotificationSettings.fromJson(jsonDecode(settingsJson));
+      }
+    } catch (e) {
+      print('Lỗi đọc settings khi tạo channel: $e');
+    }
+
+    final soundId = settings?.notificationSound ?? 'system';
+    final hasCustomSound = soundId != 'system';
+
+    // Tạo kênh mới với âm thanh tương ứng
+    final List<AndroidNotificationChannel> channels = [
       AndroidNotificationChannel(
-        'schedule_channel',
+        'schedule_channel_$soundId', // ID Kênh thay đổi theo âm thanh để hệ thống nhận diện
         'Lịch học',
         description: 'Thông báo nhắc nhở lịch học hàng ngày',
         importance: Importance.high,
         playSound: true,
+        sound: hasCustomSound ? RawResourceAndroidNotificationSound(soundId) : null,
         enableVibration: true,
       ),
       AndroidNotificationChannel(
-        'exam_channel',
+        'exam_channel_$soundId',
         'Lịch thi',
         description: 'Thông báo nhắc nhở lịch thi quan trọng',
         importance: Importance.max,
         playSound: true,
+        sound: hasCustomSound ? RawResourceAndroidNotificationSound(soundId) : null,
         enableVibration: true,
       ),
       AndroidNotificationChannel(
-        'reminder_channel',
+        'reminder_channel_$soundId',
         'Nhắc nhở trước giờ',
         description: 'Nhắc nhở trước giờ học/thi',
         importance: Importance.high,
         playSound: true,
+        sound: hasCustomSound ? RawResourceAndroidNotificationSound(soundId) : null,
       ),
       AndroidNotificationChannel(
-        'exam_advance_channel',
+        'exam_advance_channel_$soundId',
         'Nhắc trước kỳ thi',
         description: 'Nhắc nhở trước nhiều ngày kỳ thi',
         importance: Importance.max,
         playSound: true,
+        sound: hasCustomSound ? RawResourceAndroidNotificationSound(soundId) : null,
         enableVibration: true,
       ),
     ];
 
     for (var channel in channels) {
-      await _localNotifications
-          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(channel);
+      await androidPlugin?.createNotificationChannel(channel);
     }
   }
 
   void _setupMessageHandlers() {
-    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
-    _checkInitialMessage();
-  }
-
-  Future<void> _handleForegroundMessage(RemoteMessage message) async {
-    print('📬 Foreground message: ${message.notification?.title}');
-
-    await _localNotifications.show(
-      message.notification.hashCode,
-      message.notification?.title,
-      message.notification?.body,
-      NotificationDetails(
-        android: AndroidNotificationDetails(
-          message.data['channel'] ?? 'schedule_channel',
-          message.data['channelName'] ?? 'Thông báo',
-          importance: Importance.high,
-          priority: Priority.high,
-          icon: '@mipmap/ic_launcher',
-        ),
-        iOS: const DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-        ),
-      ),
-      payload: jsonEncode(message.data),
-    );
+    // Lưu ý: Các sự kiện tin nhắn FCM trực tiếp (foreground/background)
+    // được xử lý duy nhất bởi SimpleFirebaseService để tránh hiển thị trùng lặp thông báo local.
   }
 
   void _handleNotificationTap(dynamic response) {
@@ -276,16 +282,18 @@ class SmartNotificationService {
     }
 
     if (payload != null) {
-      final data = jsonDecode(payload);
-      print('👆 Notification tapped: ${data['type']}');
-      // TODO: Navigate to appropriate screen
-    }
-  }
-
-  Future<void> _checkInitialMessage() async {
-    RemoteMessage? message = await _messaging.getInitialMessage();
-    if (message != null) {
-      _handleNotificationTap(message);
+      try {
+        final data = jsonDecode(payload);
+        print('👆 Notification tapped: ${data['type']}');
+        if (data is Map<String, dynamic>) {
+          final notificationId = NotificationTrackingService.extractNotificationId(data);
+          if (notificationId != null) {
+            NotificationTrackingService.reportOpened(notificationId);
+          }
+        }
+      } catch (e) {
+        print('Lỗi parse payload tap notification: $e');
+      }
     }
   }
 
@@ -349,6 +357,9 @@ class SmartNotificationService {
     required int classMinute,
     required AppNotificationSettings settings,
   }) async {
+    final soundId = settings.notificationSound;
+    final channelSuffix = soundId == 'system' ? '' : '_$soundId';
+
     // 1. Thông báo hàng ngày
     DateTime dailyNotificationTime = DateTime(
       ngayHoc.year,
@@ -364,7 +375,8 @@ class SmartNotificationService {
         title: '📘 Lịch học hôm nay',
         body: '$tenMon - $gioHoc tại $phongHoc',
         scheduledTime: dailyNotificationTime,
-        channel: 'schedule_channel',
+        channel: 'schedule_channel$channelSuffix',
+        sound: soundId,
         payload: jsonEncode({
           'type': 'CLASS',
           'id': id,
@@ -390,7 +402,8 @@ class SmartNotificationService {
           title: '⏰ Sắp đến giờ học',
           body: '$tenMon sẽ bắt đầu sau ${settings.reminderMinutes} phút',
           scheduledTime: reminderTime,
-          channel: 'reminder_channel',
+          channel: 'reminder_channel$channelSuffix',
+          sound: soundId,
           payload: jsonEncode({
             'type': 'REMINDER',
             'id': id,
@@ -412,6 +425,9 @@ class SmartNotificationService {
     required int classMinute,
     required AppNotificationSettings settings,
   }) async {
+    final soundId = settings.notificationSound;
+    final channelSuffix = soundId == 'system' ? '' : '_$soundId';
+
     // 1. Thông báo ngày thi
     DateTime examDayNotifTime = DateTime(
       ngayThi.year,
@@ -427,7 +443,8 @@ class SmartNotificationService {
         title: '🧾 Hôm nay bạn có thi',
         body: '$tenMon - $gioThi tại $phongThi',
         scheduledTime: examDayNotifTime,
-        channel: 'exam_channel',
+        channel: 'exam_channel$channelSuffix',
+        sound: soundId,
         payload: jsonEncode({
           'type': 'EXAM',
           'id': id,
@@ -453,7 +470,8 @@ class SmartNotificationService {
           title: '⏰ Sắp đến giờ thi',
           body: '$tenMon sẽ bắt đầu sau ${settings.reminderMinutes} phút',
           scheduledTime: examReminderTime,
-          channel: 'reminder_channel',
+          channel: 'reminder_channel$channelSuffix',
+          sound: soundId,
           payload: jsonEncode({
             'type': 'EXAM_REMINDER',
             'id': id,
@@ -482,7 +500,8 @@ class SmartNotificationService {
             title: '📅 Sắp đến kỳ thi',
             body: 'Còn $i ngày nữa: $tenMon vào ${_formatDate(ngayThi)} tại $phongThi',
             scheduledTime: notifyAt,
-            channel: 'exam_advance_channel',
+            channel: 'exam_advance_channel$channelSuffix',
+            sound: soundId,
             payload: jsonEncode({
               'type': 'EXAM_ADVANCE',
               'id': id,
@@ -512,13 +531,17 @@ class SmartNotificationService {
 
     if (!effectiveSettings.enabled || !effectiveSettings.examEnabled) return;
 
+    final soundId = effectiveSettings.notificationSound;
+    final channelSuffix = soundId == 'system' ? '' : '_$soundId';
+
     if (notifyAt.isAfter(DateTime.now())) {
       await _scheduleNotification(
         id: id + 200000 + daysAhead,
         title: '📅 Sắp đến kỳ thi',
         body: 'Còn $daysAhead ngày nữa: $tenMon vào ${_formatDate(ngayThi)} tại $phongThi',
         scheduledTime: notifyAt,
-        channel: 'exam_advance_channel',
+        channel: 'exam_advance_channel$channelSuffix',
+        sound: soundId,
         payload: jsonEncode({
           'type': 'EXAM_ADVANCE',
           'id': id,
@@ -536,6 +559,7 @@ class SmartNotificationService {
     required String body,
     required DateTime scheduledTime,
     required String channel,
+    String sound = 'system',
     String? payload,
   }) async {
     final tz.TZDateTime scheduledDate = tz.TZDateTime.from(
@@ -557,12 +581,14 @@ class SmartNotificationService {
           icon: '@mipmap/ic_launcher',
           color: const Color(0xFF2196F3),
           playSound: true,
+          sound: sound != 'system' ? RawResourceAndroidNotificationSound(sound) : null,
           enableVibration: true,
         ),
-        iOS: const DarwinNotificationDetails(
+        iOS: DarwinNotificationDetails(
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
+          sound: sound != 'system' ? '$sound.mp3' : null,
         ),
       ),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
@@ -572,16 +598,10 @@ class SmartNotificationService {
   }
 
   String _getChannelName(String channel) {
-    switch (channel) {
-      case 'exam_channel':
-        return 'Lịch thi';
-      case 'exam_advance_channel':
-        return 'Nhắc trước kỳ thi';
-      case 'reminder_channel':
-        return 'Nhắc nhở';
-      default:
-        return 'Lịch học';
-    }
+    if (channel.startsWith('exam_channel')) return 'Lịch thi';
+    if (channel.startsWith('exam_advance_channel')) return 'Nhắc trước kỳ thi';
+    if (channel.startsWith('reminder_channel')) return 'Nhắc nhở';
+    return 'Lịch học';
   }
 
   String _formatDate(DateTime date) {

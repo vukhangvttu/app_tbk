@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../auth/services/auth_service.dart';
-import '../models/notification_history.dart';
 import '../screens/notification_history_screen.dart'; // Đảm bảo import model đúng
 
 class NotificationHistoryService {
@@ -18,12 +17,23 @@ class NotificationHistoryService {
   /// Timeout chung
   static const Duration _timeout = Duration(seconds: 20);
 
+  /// Giải mã JSON an toàn, tránh văng FormatException do HTML error page hoặc rác
+  static dynamic _safeJsonDecode(String body) {
+    final trimmed = body.trim();
+    if (trimmed.isEmpty) return null;
+    try {
+      return jsonDecode(trimmed);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 1. Lấy danh sách thông báo theo MSSV
   /// GET /notification-history/:mssv
   static Future<List<NotificationHistory>> fetchNotifications(BuildContext context) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'GET',
       endpoint: '/notification-history/$mssv',
     ).timeout(
@@ -31,27 +41,59 @@ class NotificationHistoryService {
       onTimeout: () => throw TimeoutException('Kết nối quá hạn (20s). Vui lòng thử lại.'),
     );
 
+    // Thử các endpoint dự phòng nếu bị 404/405
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'GET',
+        endpoint: '/notification_history/$mssv',
+      ).timeout(_timeout);
+    }
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'GET',
+        endpoint: '/notifications/$mssv',
+      ).timeout(_timeout);
+    }
+
     if (response == null) {
       throw Exception('Không nhận được phản hồi từ server.');
     }
 
     if (response.statusCode == 200) {
-      final Map<String, dynamic> body = jsonDecode(response.body);
-      if (!body['success']) {
-        throw Exception(body['message'] ?? 'Lỗi không xác định từ server');
+      final decoded = _safeJsonDecode(response.body);
+      if (decoded == null) {
+        throw Exception('Dữ liệu phản hồi từ máy chủ không đúng định dạng JSON.');
       }
 
-      final List<dynamic> jsonData = body['data'] as List<dynamic>;
+      dynamic rawData;
+      if (decoded is Map<String, dynamic>) {
+        if (decoded['success'] == false) {
+          throw Exception(decoded['message'] ?? 'Lỗi không xác định từ server');
+        }
+        rawData = decoded['data'] ?? decoded['notifications'] ?? decoded['result'];
+      } else if (decoded is List) {
+        rawData = decoded;
+      }
+
+      if (rawData == null || rawData is! List) {
+        return [];
+      }
+
+      final List<dynamic> jsonData = rawData;
       final notifications = jsonData
-          .map((json) => NotificationHistory.fromJson(json))
+          .map((json) => NotificationHistory.fromJson(Map<String, dynamic>.from(json)))
           .toList();
 
       // Sắp xếp mới nhất trước
       notifications.sort((a, b) => b.timestamp.compareTo(a.timestamp));
       return notifications;
     } else {
-      final errorBody = jsonDecode(response.body);
-      throw Exception(errorBody['message'] ?? 'Lỗi ${response.statusCode}');
+      final decoded = _safeJsonDecode(response.body);
+      if (decoded is Map && decoded['message'] != null) {
+        throw Exception(decoded['message']);
+      }
+      throw Exception('Lỗi máy chủ (${response.statusCode})');
     }
   }
 
@@ -60,19 +102,36 @@ class NotificationHistoryService {
   static Future<int> getUnreadCount(BuildContext context) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'GET',
       endpoint: '/notification-history/$mssv/unread-count',
     ).timeout(_timeout);
 
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'GET',
+        endpoint: '/notification_history/$mssv/unread-count',
+      ).timeout(_timeout);
+    }
+
     if (response == null) throw Exception('Không nhận được phản hồi từ server.');
 
     if (response.statusCode == 200) {
-      final Map<String, dynamic> body = jsonDecode(response.body);
-      if (!body['success']) throw Exception(body['message'] ?? 'Lỗi server');
-      return body['data']['unread_count'] as int;
+      final decoded = _safeJsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        if (decoded['success'] == false) return 0;
+        final data = decoded['data'];
+        if (data == null) return 0;
+        if (data is Map) {
+          return (data['unread_count'] ?? data['unreadCount'] ?? 0) as int;
+        }
+        if (data is int) return data;
+      } else if (decoded is int) {
+        return decoded;
+      }
+      return 0;
     } else {
-      throw Exception('Lỗi ${response.statusCode}');
+      return 0;
     }
   }
 
@@ -81,16 +140,26 @@ class NotificationHistoryService {
   static Future<void> markAllAsRead(BuildContext context) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'PATCH',
       endpoint: '/notification-history/$mssv/mark-all-read',
     ).timeout(_timeout);
 
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'PUT',
+        endpoint: '/notification_history/$mssv/read-all',
+      ).timeout(_timeout);
+    }
+
     if (response == null) throw Exception('Không nhận được phản hồi từ server.');
 
     if (response.statusCode != 200) {
-      final errorBody = jsonDecode(response.body);
-      throw Exception(errorBody['message'] ?? 'Không thể đánh dấu đã đọc');
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể đánh dấu đã đọc';
+      throw Exception(errorMsg);
     }
   }
 
@@ -99,16 +168,26 @@ class NotificationHistoryService {
   static Future<void> markAsRead(BuildContext context, int notificationId) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'PATCH',
       endpoint: '/notification-history/$mssv/mark-read/$notificationId',
     ).timeout(_timeout);
 
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'PUT',
+        endpoint: '/notification_history/$mssv/read/$notificationId',
+      ).timeout(_timeout);
+    }
+
     if (response == null) throw Exception('Không nhận được phản hồi từ server.');
 
     if (response.statusCode != 200) {
-      final errorBody = jsonDecode(response.body);
-      throw Exception(errorBody['message'] ?? 'Không thể đánh dấu thông báo đã đọc');
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể đánh dấu thông báo đã đọc';
+      throw Exception(errorMsg);
     }
   }
 
@@ -117,16 +196,33 @@ class NotificationHistoryService {
   static Future<void> deleteNotification(BuildContext context, int notificationId) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'DELETE',
       endpoint: '/notification-history/$mssv/delete/$notificationId',
     ).timeout(_timeout);
 
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'DELETE',
+        endpoint: '/notification_history/$mssv/$notificationId',
+      ).timeout(_timeout);
+    }
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'DELETE',
+        endpoint: '/notification-history/$mssv/$notificationId',
+      ).timeout(_timeout);
+    }
+
     if (response == null) throw Exception('Không nhận được phản hồi từ server.');
 
     if (response.statusCode != 204 && response.statusCode != 200) {
-      final errorBody = jsonDecode(response.body);
-      throw Exception(errorBody['message'] ?? 'Không thể xóa thông báo');
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể xóa thông báo';
+      throw Exception(errorMsg);
     }
   }
 
@@ -135,16 +231,33 @@ class NotificationHistoryService {
   static Future<void> deleteAllNotifications(BuildContext context) async {
     final mssv = await _getMssv();
 
-    final response = await AuthService.authenticatedRequestNotification(
+    var response = await AuthService.authenticatedRequestNotification(
       method: 'DELETE',
       endpoint: '/notification-history/$mssv/delete-all',
     ).timeout(_timeout);
 
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'DELETE',
+        endpoint: '/notification_history/$mssv',
+      ).timeout(_timeout);
+    }
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'DELETE',
+        endpoint: '/notification-history/$mssv',
+      ).timeout(_timeout);
+    }
+
     if (response == null) throw Exception('Không nhận được phản hồi từ server.');
 
     if (response.statusCode != 204 && response.statusCode != 200) {
-      final errorBody = jsonDecode(response.body);
-      throw Exception(errorBody['message'] ?? 'Không thể xóa tất cả thông báo');
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể xóa tất cả thông báo';
+      throw Exception(errorMsg);
     }
   }
 }

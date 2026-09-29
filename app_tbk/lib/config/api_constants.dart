@@ -2,7 +2,7 @@ import 'package:app_tbk/features/auth/services/auth_service.dart';
 
 class ApiConstants {
   // static const String baseUrl = 'http://113.164.79.241:8202/api/thoi-khoa-bieu';
-  static const String baseUrl = 'http://192.168.0.8:8202/student-calendar/api/v1';
+  static const String baseUrl = 'http://113.164.79.241:8202/student-calendar/api/v1';
 
   static const String googleServerClientId = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID',
       defaultValue: '73761905325-kotojsegt56dr15adr9jvlpbi91uc017.apps.googleusercontent.com');

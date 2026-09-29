@@ -34,6 +34,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _hasAvatar = false;
   int _avatarTimestamp = DateTime.now().millisecondsSinceEpoch;
   String _userId = '';
+  late Future<Map<String, String>> _authHeadersFuture;
 
   String? _normalizeGender(String? raw) {
     if (raw == null || raw.trim().isEmpty) return null;
@@ -47,6 +48,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _authHeadersFuture = ProfileService.getAuthHeaders();
     _loadProfile();
   }
 
@@ -616,7 +618,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               )
                   : _hasAvatar
                   ? FutureBuilder<Map<String, String>>(
-                future: ProfileService.getAuthHeaders(),
+                future: _authHeadersFuture,
                 builder: (context, snapshot) {
                   if (!snapshot.hasData) {
                     return const Center(

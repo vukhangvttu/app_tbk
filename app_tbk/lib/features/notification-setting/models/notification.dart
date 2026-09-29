@@ -8,6 +8,7 @@ class AppNotificationSettings {
   final int examMinute;
   final int reminderMinutes;
   final int examReminderDays;
+  final String notificationSound; // 'system', 'sound_gentle', 'sound_energetic', 'sound_bell'
   final bool isDefaultSettings; // Thêm flag để đánh dấu là settings mặc định
 
   AppNotificationSettings({
@@ -20,6 +21,7 @@ class AppNotificationSettings {
     required this.examMinute,
     required this.reminderMinutes,
     required this.examReminderDays,
+    this.notificationSound = 'system',
     this.isDefaultSettings = false,
   });
 
@@ -38,6 +40,7 @@ class AppNotificationSettings {
     int? examMinute,
     int? reminderMinutes,
     int? examReminderDays,
+    String? notificationSound,
     bool? isDefaultSettings,
   }) {
     return AppNotificationSettings(
@@ -50,6 +53,7 @@ class AppNotificationSettings {
       examMinute: examMinute ?? this.examMinute,
       reminderMinutes: reminderMinutes ?? this.reminderMinutes,
       examReminderDays: examReminderDays ?? this.examReminderDays,
+      notificationSound: notificationSound ?? this.notificationSound,
       isDefaultSettings: isDefaultSettings ?? this.isDefaultSettings,
     );
   }
@@ -57,14 +61,15 @@ class AppNotificationSettings {
   factory AppNotificationSettings.fromJson(Map<String, dynamic> json, {bool isDefault = false}) {
     return AppNotificationSettings(
       enabled: json['enabled'] ?? false,
-      scheduleEnabled: json['schedule_enabled'] ?? true,
-      scheduleHour: json['schedule_hour'] ?? 8,
-      scheduleMinute: json['schedule_minute'] ?? 30,
-      examEnabled: json['exam_enabled'] ?? true,
-      examHour: json['exam_hour'] ?? 6,
-      examMinute: json['exam_minute'] ?? 0,
-      reminderMinutes: json['reminder_minutes'] ?? 30,
-      examReminderDays: json['exam_reminder_days'] ?? 3,
+      scheduleEnabled: json['schedule_enabled'] ?? json['scheduleEnabled'] ?? true,
+      scheduleHour: json['schedule_hour'] ?? json['scheduleHour'] ?? 8,
+      scheduleMinute: json['schedule_minute'] ?? json['scheduleMinute'] ?? 30,
+      examEnabled: json['exam_enabled'] ?? json['examEnabled'] ?? true,
+      examHour: json['exam_hour'] ?? json['examHour'] ?? 6,
+      examMinute: json['exam_minute'] ?? json['examMinute'] ?? 0,
+      reminderMinutes: json['reminder_minutes'] ?? json['reminderMinutes'] ?? 30,
+      examReminderDays: json['exam_reminder_days'] ?? json['examReminderDays'] ?? 3,
+      notificationSound: json['notification_sound'] ?? json['notificationSound'] ?? 'system',
       isDefaultSettings: isDefault,
     );
   }
@@ -72,14 +77,15 @@ class AppNotificationSettings {
   Map<String, dynamic> toJson() {
     return {
       'enabled': enabled,
-      'scheduleEnabled': scheduleEnabled,
-      'scheduleHour': scheduleHour,
-      'scheduleMinute': scheduleMinute,
-      'examEnabled': examEnabled,
-      'examHour': examHour,
-      'examMinute': examMinute,
-      'reminderMinutes': reminderMinutes,
-      'examReminderDays': examReminderDays,
+      'schedule_enabled': scheduleEnabled,
+      'schedule_hour': scheduleHour,
+      'schedule_minute': scheduleMinute,
+      'exam_enabled': examEnabled,
+      'exam_hour': examHour,
+      'exam_minute': examMinute,
+      'reminder_minutes': reminderMinutes,
+      'exam_reminder_days': examReminderDays,
+      'notification_sound': notificationSound,
     };
   }
 }

@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'dart:async';
 import 'dart:io';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/models/class_schedule.dart';
 import 'package:app_tbk/services/notification_service.dart';
 import 'package:flutter/material.dart';
@@ -37,9 +38,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
   int tuanDuocChon = 1;
   List<int> danhSachTuan = List.generate(25, (i) => i + 1);
 
-  static final DateTime ngayBatDauHocKy = AcademicConfig.ngayBatDauHocKy;
-  late final DateTime ngayDau = DateTime(ngayBatDauHocKy.year, 1, 1); // Đầu năm của học kỳ
-  late final DateTime ngayCuoi = DateTime(ngayBatDauHocKy.year + 1, 12, 31); // Cuối năm sau
+  DateTime get ngayBatDauHocKy => AcademicConfig.ngayBatDauHocKy;
+  DateTime get ngayDau => DateTime(ngayBatDauHocKy.year, 1, 1); // Đầu năm của học kỳ
+  DateTime get ngayCuoi => DateTime(ngayBatDauHocKy.year + 1, 12, 31); // Cuối năm sau
 
   late TabController _tabController;
 
@@ -109,6 +110,14 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     });
 
     try {
+      // Tải thông tin học kỳ mới nhất từ server
+      await AcademicConfig.fetchAcademicTerm();
+      if (mounted) {
+        setState(() {
+          tinhTuanHocHienTai();
+        });
+      }
+
       final idSinhVien = (await AuthService.getIdSinhVien())?.toString();
       if (idSinhVien == null || idSinhVien.isEmpty) {
         throw Exception('Không tìm thấy thông tin sinh viên');
@@ -178,7 +187,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       if (!mounted) return;
 
       setState(() {
-        loi = 'Không có kết nối internet';
+        loi = 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.';
         dangTai = false;
       });
 
@@ -188,7 +197,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       String errorMsg = e.toString();
 
       String finalMessage;
-      if (errorMsg.contains('Không tìm thấy token') || errorMsg.contains('hết hạn')) {
+      if (e is NoInternetException ||
+          errorMsg.contains('Không có kết nối') ||
+          errorMsg.contains('SocketException') ||
+          errorMsg.contains('ClientException')) {
+        finalMessage = 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.';
+      } else if (errorMsg.contains('Không tìm thấy token') || errorMsg.contains('hết hạn')) {
         finalMessage = 'Vui lòng đăng nhập lại';
       } else if (errorMsg.contains('401')) {
         finalMessage = 'Không có quyền truy cập';

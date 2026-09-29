@@ -1,5 +1,7 @@
 // lib/features/profile/services/device_service.dart
 import 'dart:convert';
+import 'dart:io';
+import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:http/http.dart' as http;
 import '../../../config/api_constants.dart';
 import '../../auth/services/auth_service.dart';
@@ -10,23 +12,31 @@ class DeviceService {
   static Future<Map<String, dynamic>> requestDeviceListOTP({
     required String password,
   }) async {
+    if (!await AuthService.hasInternetConnection()) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    }
+
     final token = await AuthService.getToken();
     if (token == null) throw Exception('Token not found');
 
-    final response = await http.post(
-      Uri.parse('${ApiConstants.baseUrl}/devices/verify-password'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      },
-      body: jsonEncode({'password': password}),
-    );
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConstants.baseUrl}/devices/verify-password'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({'password': password}),
+      );
 
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      final error = jsonDecode(response.body);
-      throw Exception(error['message'] ?? 'Xác thực thất bại');
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        final error = jsonDecode(response.body);
+        throw Exception(error['message'] ?? 'Xác thực thất bại');
+      }
+    } on SocketException catch (_) {
+      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
     }
   }
 

@@ -420,14 +420,8 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop || !mounted) return;
 
-        await _stopCamera();
         widget.onCancel?.call();
-
-        // if (mounted) {
-        //   WidgetsBinding.instance.addPostFrameCallback((_) {
-        //     if (mounted) Navigator.of(context).pop();
-        //   });
-        // }
+        await _stopCamera();
       },
       child: Stack(
         fit: StackFit.expand,
