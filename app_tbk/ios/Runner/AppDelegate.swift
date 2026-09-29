@@ -1,5 +1,7 @@
 import UIKit
 import Flutter
+import MachO
+import Darwin
 
 @UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
