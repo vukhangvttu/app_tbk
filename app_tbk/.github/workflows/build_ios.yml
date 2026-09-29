@@ -23,7 +23,11 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
+
+      - name: List files in workspace
+        run: |
+          echo "Current working directory: $(pwd)"
+          ls -la
 
       - name: Install Flutter Dependencies
         run: flutter pub get
