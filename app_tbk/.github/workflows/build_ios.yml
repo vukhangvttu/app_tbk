@@ -24,13 +24,13 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Clean Flutter & iOS Caches
+        run: |
+          flutter clean
+          rm -rf ios/Pods ios/Podfile.lock ios/Runner.xcworkspace ios/Flutter/Flutter.podspec .dart_tool/
+
       - name: Disable Swift Package Manager
         run: flutter config --no-enable-swift-package-manager
-
-      - name: List files in workspace
-        run: |
-          echo "Current working directory: $(pwd)"
-          ls -la
 
       - name: Install Flutter Dependencies
         run: flutter pub get

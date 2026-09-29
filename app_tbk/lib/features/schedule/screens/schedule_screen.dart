@@ -256,6 +256,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
   }
 
   Future<void> _xuLyThongBao() async {
+    final idSinhVienStr = await AuthService.getIdSinhVien();
+    final idSinhVienVal = int.tryParse(idSinhVienStr ?? '') ?? 0;
+
     final homNay = DateTime.now();
     final coLichHocHomNay = lichHoc.any((lop) {
       return lop.ngayBd.isBefore(homNay.add(const Duration(days: 1))) &&
@@ -272,7 +275,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       if (coLichHocHomNay) {
         final noiDungHoc = 'Nhắc nhở: Bạn có lịch học hôm nay (${homNay.day}/${homNay.month}/${homNay.year}).';
         await NotificationService().showAndSaveNotification(
-          idSinhVien: 19719,
+          idSinhVien: idSinhVienVal,
           title: '📘 Lịch học hôm nay',
           body: noiDungHoc,
           loaiLich: 'LICH_HOC',
@@ -289,7 +292,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       if (coLichThiHomNay) {
         final noiDungThi = 'Nhắc nhở: Bạn có lịch thi hôm nay (${homNay.day}/${homNay.month}/${homNay.year}).';
         await NotificationService().showAndSaveNotification(
-          idSinhVien: 19719,
+          idSinhVien: idSinhVienVal,
           title: '🧾 Lịch thi hôm nay',
           body: noiDungThi,
           loaiLich: 'LICH_THI',
