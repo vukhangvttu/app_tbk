@@ -8,9 +8,6 @@ on:
 jobs:
   build-ios:
     runs-on: macos-14
-    defaults:
-      run:
-        working-directory: app_tbk
 
     steps:
       - name: Checkout repository
@@ -50,4 +47,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: app_tbk/app-release.ipa
+          path: app-release.ipa
