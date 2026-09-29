@@ -7,7 +7,7 @@ import 'package:app_tbk/features/notification-setting/screens/notification_dialo
 import 'package:app_tbk/services/smart_notification_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:easy_localization/easy_localization.dart';
-                                                                                                                                                      import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
