@@ -101,7 +101,6 @@ dependencies:
   google_sign_in: ^6.2.1
 
 flutter:
-  swift-package-manager: false
   assets:
     - assets/translations/
     - assets/images/
