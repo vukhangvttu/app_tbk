@@ -25,7 +25,7 @@ jobs:
           channel: 'stable'
 
       - name: Disable Swift Package Manager
-        run: flutter config --no-swift-package-manager
+        run: flutter config --no-enable-swift-package-manager
 
       - name: List files in workspace
         run: |
