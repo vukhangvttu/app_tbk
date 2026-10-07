@@ -1,16 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:easy_localization/easy_localization.dart';
+import 'package:shimmer/shimmer.dart';
 
 import '../../auth/services/auth_service.dart';
 import '../services/attendance_history_service.dart';
-
-class AttendanceHistoryScreen extends StatefulWidget {
-  final Function(int)? onTabSelected;
-  const AttendanceHistoryScreen({super.key, this.onTabSelected});
-
-  @override
-  AttendanceHistoryScreenState createState() => AttendanceHistoryScreenState();
-}
 
 /// Parse timestamp từ server, GIỮ NGUYÊN giờ như server trả về,
 /// không convert theo timezone thiết bị (vì server đã trả sẵn giờ VN
@@ -27,17 +20,44 @@ DateTime _parseServerDateTime(dynamic raw) {
   try {
     return DateTime.parse(cleaned);
   } catch (e) {
-    print('❌ Parse date lỗi: "$str" -> $e');
+    debugPrint('❌ Parse date lỗi: "$str" -> $e');
     return DateTime(1900);
   }
 }
 
+/// Server dùng mốc 01/01/1900 (bản cũ: năm 1899) để đánh dấu "chưa điểm danh ra".
+/// Mọi chỗ hiển thị giờ ra đều dùng chung hàm này để nhất quán.
+bool _laThoiGianRong(DateTime dt) => dt.year <= 1900;
 
-class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
-    with SingleTickerProviderStateMixin {
+/// Phân loại hình thức điểm danh từ giá trị ảnh server trả về.
+/// Dùng chung cho cả điểm danh vào/ra, cả card gọn lẫn bottom sheet chi tiết.
+String _loaiDiemDanh(dynamic raw) {
+  final s = raw?.toString() ?? '';
+  if (s.isEmpty) return 'Vân tay';
+  if (s.contains('CAMAI')) return 'Khuôn mặt';
+  return 'MSSV';
+}
+
+/// Chuẩn hóa URL ảnh: server có thể trả 'N/A' hoặc chuỗi rỗng khi không có ảnh.
+String? _chuanHoaAnh(dynamic raw) {
+  final s = raw?.toString().trim() ?? '';
+  if (s.isEmpty || s == 'N/A') return null;
+  return s;
+}
+
+class AttendanceHistoryScreen extends StatefulWidget {
+  final Function(int)? onTabSelected;
+  const AttendanceHistoryScreen({super.key, this.onTabSelected});
+
+  @override
+  AttendanceHistoryScreenState createState() => AttendanceHistoryScreenState();
+}
+
+class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   List<dynamic> _attendanceList = [];
   List<dynamic> _filteredList = [];
   bool _isLoading = true;
+  bool _dangTai = false;
   String? _error;
 
   // Filter states
@@ -47,6 +67,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   String _dateFilterType = 'none'; // 'none', 'days', 'single', 'range'
   int? _soNgay = 14; // Mặc định 14 ngày
   List<String> _availableMaMon = [];
+  Map<String, String> _maMonLabels = {}; // maMon -> "maMon - tenMon"
 
   String? get _tuNgayParam {
     if (_dateFilterType == 'single' && _selectedSingleDate != null) {
@@ -75,92 +96,38 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     return _soNgay ?? 14;
   }
 
-  int _currentTabIndex = 0;
-  final Map<int, bool> _tabLoading = {0: false, 1: false, 2: false, 3: false};
-  final Map<int, bool> _tabLoaded = {0: false, 1: false, 2: false, 3: false};
-
-  late TabController _tabController;
-  bool _tabTransitionLoading = false;
-
+  /// API public cho MainScreen: tab được chọn → tải nếu chưa có dữ liệu.
   void loadTab(int tabIndex) {
     if (!mounted) return;
-
     if (_attendanceList.isNotEmpty) {
-      setState(() {
-        _currentTabIndex = tabIndex;
-        _isLoading = false;
-        _tabTransitionLoading = false;
-        _applyFilters();
-      });
+      setState(_applyFilters);
       return;
     }
-
-    setState(() {
-      _currentTabIndex = tabIndex;
-      _isLoading = true;
-      _tabTransitionLoading = true;
-    });
-
-    _fetchAttendanceHistory(tabIndex).then((_) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _tabTransitionLoading = false;
-        });
-      }
-    });
+    _fetchAttendanceHistory();
   }
 
-  // ✅ PUBLIC METHOD - Fetch data với tùy chọn force refresh
-  Future<void> fetchData({bool forceRefresh = false}) async {
-    await _fetchAttendanceHistory(_currentTabIndex, forceRefresh: forceRefresh);
-  }
+  /// API public: tải lại dữ liệu.
+  Future<void> fetchData({bool forceRefresh = false}) =>
+      _fetchAttendanceHistory();
 
-  // ✅ PUBLIC METHOD - Load tab và fetch (dùng khi gọi từ ngoài)
-  Future<void> loadTabAndFetch(int tabIndex) async {
-    if (!mounted) return;
-
-    setState(() {
-      _currentTabIndex = tabIndex;
-      _isLoading = true;
-      _tabTransitionLoading = true;
-    });
-
-    await _fetchAttendanceHistory(tabIndex, forceRefresh: true);
-
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-        _tabTransitionLoading = false;
-      });
-    }
-  }
+  /// API public: chọn tab và tải mới.
+  Future<void> loadTabAndFetch(int tabIndex) => _fetchAttendanceHistory();
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
-
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        loadTab(_tabController.index);
-      }
-    });
-
-    // Load tab đầu tiên khi màn hình được mở
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      loadTab(0);
+      _fetchAttendanceHistory();
     });
   }
 
-  Future<void> _fetchAttendanceHistory(int tabIndex, {bool forceRefresh = false}) async {
-    // Nếu đang loading → không fetch nữa
-    if (_tabLoading[tabIndex] == true) return;
+  Future<void> _fetchAttendanceHistory() async {
+    if (_dangTai || !mounted) return;
 
     setState(() {
+      _dangTai = true;
       _isLoading = true;
       _error = null;
-      _tabLoading[tabIndex] = true;
     });
 
     try {
@@ -169,44 +136,39 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         throw Exception('Không tìm thấy thông tin sinh viên');
       }
 
-      final tuNgay = _tuNgayParam;
-      final denNgay = _denNgayParam;
-      final soNgay = _soNgayParam;
-
-      print('🔄 Fetching data từ API với params: TuNgay=$tuNgay, DenNgay=$denNgay, SoNgay=$soNgay...');
+      debugPrint(
+          '🔄 Fetching data từ API: TuNgay=$_tuNgayParam, DenNgay=$_denNgayParam, SoNgay=$_soNgayParam');
       final data = await AttendanceHistoryService.getAttendanceHistory(
         idSinhVien,
-        tuNgay: tuNgay,
-        denNgay: denNgay,
-        soNgay: soNgay,
+        tuNgay: _tuNgayParam,
+        denNgay: _denNgayParam,
+        soNgay: _soNgayParam,
       );
 
-      // Sort NgayTao giảm dần
+      // Sort NgayTao giảm dần (dùng chung parser, không toLocal)
       data.sort((a, b) {
-        final dateA = DateTime.tryParse(a['NgayTao']?.toString() ?? '') ?? DateTime(1900);
-        final dateB = DateTime.tryParse(b['NgayTao']?.toString() ?? '') ?? DateTime(1900);
+        final dateA = _parseServerDateTime(a['NgayTao']);
+        final dateB = _parseServerDateTime(b['NgayTao']);
         return dateB.compareTo(dateA);
       });
 
+      if (!mounted) return;
       setState(() {
         _attendanceList = data;
         _extractMaMon();
         _applyFilters();
         _isLoading = false;
-        _tabLoading[tabIndex] = false;
-        _tabLoaded[tabIndex] = true;
+        _dangTai = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _isLoading = false;
-        _tabLoading[tabIndex] = false;
+        _dangTai = false;
       });
     }
   }
-
-  // ✅ Extract mã môn (tách riêng để tái sử dụng)
-  Map<String, String> _maMonLabels = {}; // maMon -> "maMon - tenMon"
 
   void _extractMaMon() {
     final maMonSet = <String>{};
@@ -221,29 +183,14 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
         final tenMonStr = (tenMon != null && tenMon.toString().isNotEmpty)
             ? tenMon.toString()
             : '';
-        labels[maMonStr] = tenMonStr.isNotEmpty ? '$maMonStr - $tenMonStr' : maMonStr;
+        labels[maMonStr] =
+        tenMonStr.isNotEmpty ? '$maMonStr - $tenMonStr' : maMonStr;
       }
     }
 
     _availableMaMon = maMonSet.toList()..sort();
     _maMonLabels = labels;
   }
-
-  // Refresh data
-  Future<void> _fetchAttendanceHistory_refresh() async {
-    print('🔄 Refreshing data từ API...');
-
-    setState(() {
-      _isLoading = true;
-      _error = null;
-      for (var key in _tabLoaded.keys) {
-        _tabLoaded[key] = false;
-      }
-    });
-
-    await _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
-  }
-
 
   void _applyFilters() {
     _filteredList = _attendanceList.where((item) {
@@ -257,7 +204,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           final thoiGianBD = item['THOIGIANBD'];
           if (thoiGianBD != null) {
             final dateTime = _parseServerDateTime(thoiGianBD);
-            final dateOnly = DateTime(dateTime.year, dateTime.month, dateTime.day);
+            final dateOnly =
+            DateTime(dateTime.year, dateTime.month, dateTime.day);
             final selectedDate = DateTime(_selectedSingleDate!.year,
                 _selectedSingleDate!.month, _selectedSingleDate!.day);
             if (dateOnly != selectedDate) return false;
@@ -272,7 +220,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           final thoiGianBD = item['THOIGIANBD'];
           if (thoiGianBD != null) {
             final dateTime = _parseServerDateTime(thoiGianBD);
-            final dateOnly = DateTime(dateTime.year, dateTime.month, dateTime.day);
+            final dateOnly =
+            DateTime(dateTime.year, dateTime.month, dateTime.day);
             final startDate = DateTime(_selectedDateRange!.start.year,
                 _selectedDateRange!.start.month, _selectedDateRange!.start.day);
             final endDate = DateTime(_selectedDateRange!.end.year,
@@ -311,7 +260,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
             _dateFilterType = filterType;
             _soNgay = soNgay;
           });
-          _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
+          _fetchAttendanceHistory();
         },
         onReset: () {
           setState(() {
@@ -321,53 +270,17 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
             _dateFilterType = 'none';
             _soNgay = 14;
           });
-          _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
+          _fetchAttendanceHistory();
         },
       ),
     );
   }
 
-  String _getAttendanceType(dynamic item) {
-    final anhVao = item['AnhVao']?.toString() ?? '';
-
-    // Nếu đều rỗng → Vân tay
-    if (anhVao.isEmpty) {
-      return 'Vân tay';
-    }
-
-    // Nếu có chữ CAMAI → Khuôn mặt
-    if (anhVao.contains('CAMAI')) {
-      return 'Khuôn mặt';
-    }
-
-    // Mặc định
-    return 'MSSV';
-  }
-
-  String _getAttendanceTypeAnhRa(dynamic item) {
-    final anhRa  = item['AnhRa']?.toString() ?? '';
-
-    // Nếu đều rỗng → Vân tay
-    if (anhRa .isEmpty) {
-      return 'Vân tay';
-    }
-
-    // Nếu có chữ CAMAI → Khuôn mặt
-    if (anhRa .contains('CAMAI')) {
-      return 'Khuôn mặt';
-    }
-
-    // Mặc định
-    return 'MSSV';
-  }
-
-
   bool _isIncompleteCheckout(dynamic item) {
     final thoiGianKT = item['THOIGIANKT'];
     if (thoiGianKT == null) return false;
     try {
-      final dateTime = _parseServerDateTime(thoiGianKT);
-      return dateTime.year == 1900;
+      return _laThoiGianRong(_parseServerDateTime(thoiGianKT));
     } catch (e) {
       return false;
     }
@@ -376,9 +289,11 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   Color _getCardColor(BuildContext context, dynamic item) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     if (_isIncompleteCheckout(item)) {
-      return isDark ? Colors.amber.shade200.withValues(alpha:  0.2) : Colors.amber.shade50;
+      return isDark
+          ? Colors.amber.shade200.withValues(alpha: 0.2)
+          : Colors.amber.shade50;
     }
-    return isDark ? Colors.grey.shade800.withValues(alpha:  0.8) : Colors.white;
+    return isDark ? Colors.grey.shade800.withValues(alpha: 0.8) : Colors.white;
   }
 
   @override
@@ -392,10 +307,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        title: Text('Lịch sử điểm danh', style: TextStyle(fontWeight: FontWeight.bold)),
-        // backgroundColor: const Color(0xFF6366F1),
-        // backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-        // foregroundColor: Colors.white,
+        title: const Text('Lịch sử điểm danh',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         elevation: 0,
         actions: [
           Stack(
@@ -421,7 +334,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () => _fetchAttendanceHistory_refresh(),
+            onPressed: _fetchAttendanceHistory,
           ),
         ],
       ),
@@ -430,10 +343,6 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   Widget _buildBody(bool isDark) {
-    if (_tabTransitionLoading) {
-      return _buildTabSkeleton(isDark);
-    }
-
     if (_isLoading) {
       return _buildTabSkeleton(isDark);
     }
@@ -457,7 +366,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
               ),
               const SizedBox(height: 24),
               ElevatedButton.icon(
-                onPressed: () => _fetchAttendanceHistory(_currentTabIndex),
+                onPressed: _fetchAttendanceHistory,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Thử lại'),
                 style: ElevatedButton.styleFrom(
@@ -476,18 +385,20 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     }
 
     return RefreshIndicator(
-      onRefresh: () => _fetchAttendanceHistory(_currentTabIndex),
+      onRefresh: _fetchAttendanceHistory,
       color: const Color(0xFF6366F1),
       child: ListView.builder(
         padding: const EdgeInsets.all(12),
         itemCount: _filteredList.length,
         itemBuilder: (context, index) {
-          return _buildCompactAttendanceCard(_filteredList[index], isDark);
+          return _FadeSlide(
+            index: index,
+            child: _buildCompactAttendanceCard(_filteredList[index], isDark),
+          );
         },
       ),
     );
   }
-
 
   Widget _buildEmptyState(bool isDark) {
     final hasActiveFilters = _selectedMaMon != null ||
@@ -506,8 +417,12 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
           ),
           const SizedBox(height: 16),
           Text(
-            _attendanceList.isEmpty ? 'Chưa có lịch sử điểm danh' : 'Không tìm thấy kết quả',
-            style: TextStyle(fontSize: 16, color: isDark ? Colors.white70 : Colors.black54),
+            _attendanceList.isEmpty
+                ? 'Chưa có lịch sử điểm danh'
+                : 'Không tìm thấy kết quả',
+            style: TextStyle(
+                fontSize: 16,
+                color: isDark ? Colors.white70 : Colors.black54),
           ),
           if (_attendanceList.isNotEmpty || hasActiveFilters) ...[
             const SizedBox(height: 16),
@@ -520,7 +435,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
                   _dateFilterType = 'none';
                   _soNgay = 14;
                 });
-                _fetchAttendanceHistory(_currentTabIndex, forceRefresh: true);
+                _fetchAttendanceHistory();
               },
               icon: const Icon(Icons.clear_all),
               label: const Text('Xóa bộ lọc'),
@@ -532,76 +447,74 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   Widget _buildTabSkeleton(bool isDark) {
-    return ListView.builder(
-      padding: const EdgeInsets.all(12),
-      itemCount: 6, // Số dòng giả
-      itemBuilder: (context, index) {
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: isDark ? Colors.grey.shade800.withOpacity(0.8) : Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade200,
-              width: 1,
+    final base = isDark ? Colors.grey.shade800 : Colors.grey.shade300;
+    final highlight = isDark ? Colors.grey.shade700 : Colors.grey.shade100;
+
+    return Shimmer.fromColors(
+      baseColor: base,
+      highlightColor: highlight,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: 6,
+        itemBuilder: (context, index) {
+          return Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? Colors.grey.shade800.withOpacity(0.8)
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isDark
+                    ? Colors.white.withOpacity(0.1)
+                    : Colors.grey.shade200,
+                width: 1,
+              ),
             ),
-            boxShadow: [
-              BoxShadow(
-                color: isDark ? Colors.black.withOpacity(0.2) : Colors.grey.withOpacity(0.1),
-                blurRadius: 4,
-                offset: const Offset(0, 1),
-              ),
-            ],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Avatar skeleton
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Title
-                    Container(
-                      height: 16,
-                      width: double.infinity,
-                      color: Colors.grey.shade300,
-                      margin: const EdgeInsets.only(bottom: 8),
-                    ),
-                    // Subtitle
-                    Container(
-                      height: 12,
-                      width: 120,
-                      color: Colors.grey.shade200,
-                      margin: const EdgeInsets.only(bottom: 12),
-                    ),
-
-                    // Time chips
-                    Row(
-                      children: [
-                        _buildSkeletonChip(Colors.green),
-                        const SizedBox(width: 8),
-                        _buildSkeletonChip(Colors.blue),
-                      ],
-                    ),
-                  ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        height: 16,
+                        width: double.infinity,
+                        color: Colors.grey.shade300,
+                        margin: const EdgeInsets.only(bottom: 8),
+                      ),
+                      Container(
+                        height: 12,
+                        width: 120,
+                        color: Colors.grey.shade200,
+                        margin: const EdgeInsets.only(bottom: 12),
+                      ),
+                      Row(
+                        children: [
+                          _buildSkeletonChip(Colors.green),
+                          const SizedBox(width: 8),
+                          _buildSkeletonChip(Colors.blue),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -625,11 +538,11 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
   }
 
   Widget _buildCompactAttendanceCard(dynamic item, bool isDark) {
+    final theme = Theme.of(context);
     final tenMon = item['tenmon'] ?? 'N/A';
     final maMon = item['mamon'] ?? 'N/A';
     final thoiGianBD = item['THOIGIANBD'];
     final thoiGianKT = item['THOIGIANKT'];
-    final attendanceType = _getAttendanceType(item);
     final isIncomplete = _isIncompleteCheckout(item);
 
     String timeIn = 'N/A';
@@ -647,16 +560,10 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     if (thoiGianKT != null) {
       try {
         final dt = _parseServerDateTime(thoiGianKT);
-        if (dt.year == 1899) {
-          timeOut = '00:00';
-        } else {
-          timeOut = DateFormat('HH:mm').format(dt.toLocal());
-        }
+        // Mốc rỗng (01/01/1900) → chip gọn hiển thị 00:00
+        timeOut =
+        _laThoiGianRong(dt) ? '00:00' : DateFormat('HH:mm').format(dt);
       } catch (e) {}
-    }
-
-    void _onTapItem(dynamic item) {
-      _showAttendanceDetail(item);
     }
 
     return Container(
@@ -685,10 +592,10 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => _onTapItem(item),
+          onTap: () => _showAttendanceDetail(item),
           borderRadius: BorderRadius.circular(12),
-          splashColor: Theme.of(context).primaryColor.withOpacity(0.15),
-          highlightColor: Theme.of(context).primaryColor.withOpacity(0.05),
+          splashColor: theme.primaryColor.withOpacity(0.15),
+          highlightColor: theme.primaryColor.withOpacity(0.05),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -783,53 +690,15 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
     );
   }
 
-
-  Widget _buildCompactBadge(String type, bool isDark) {
-    final isFingerprint = type == 'Vân tay';
-    final baseColor = isFingerprint ? Colors.green : Colors.blue;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: isDark
-            ? baseColor.shade900.withOpacity(0.5)
-            : baseColor.shade100,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            type == 'Vân tay'
-                ? Icons.fingerprint
-                : type == 'Khuôn mặt'
-                ? Icons.face
-                : Icons.credit_card,
-            size: 12,
-            color: isDark ? baseColor.shade300 : baseColor.shade700,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            type,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: isDark ? baseColor.shade300 : baseColor.shade700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTimeChip(IconData icon, String time, MaterialColor color, bool isDark) {
+  Widget _buildTimeChip(
+      IconData icon, String time, MaterialColor color, bool isDark) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withOpacity(isDark ? 0.2 : 0.1),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: color.withOpacity(isDark ? 0.3 : 0.3),
+          color: color.withOpacity(0.3),
           width: 1,
         ),
       ),
@@ -846,7 +715,6 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen>
               color: isDark ? color.shade200 : color.shade700,
             ),
           ),
-
         ],
       ),
     );
@@ -979,6 +847,25 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
     }
   }
 
+  bool _isSelected(String type, int? days) =>
+      _tempDateFilterType == type &&
+          (days == null || _tempSoNgay == days);
+
+  BoxDecoration _optionDecoration(bool selected, bool isDark) {
+    return BoxDecoration(
+      color: selected
+          ? const Color(0xFF6366F1).withOpacity(0.1)
+          : Colors.transparent,
+      border: Border.all(
+        color: selected
+            ? const Color(0xFF6366F1)
+            : (isDark ? Colors.white24 : Colors.grey.shade300),
+        width: selected ? 2 : 1,
+      ),
+      borderRadius: BorderRadius.circular(12),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1040,9 +927,11 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                       child: DropdownButton<String?>(
                         value: _tempMaMon,
                         isExpanded: true,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        padding:
+                        const EdgeInsets.symmetric(horizontal: 16),
                         borderRadius: BorderRadius.circular(12),
-                        dropdownColor: isDark ? Colors.grey.shade800 : Colors.white,
+                        dropdownColor:
+                        isDark ? Colors.grey.shade800 : Colors.white,
                         hint: Text(
                           'Tất cả môn học',
                           style: TextStyle(
@@ -1060,15 +949,17 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                             ),
                           ),
                           ...widget.availableMaMon.map((maMon) {
-                            final label = widget.maMonLabels[maMon] ?? maMon;
+                            final label =
+                                widget.maMonLabels[maMon] ?? maMon;
                             return DropdownMenuItem<String?>(
                               value: maMon,
                               child: Text(
                                 label,
-                                maxLines: 1,                     // ✅ giới hạn 1 dòng
-                                overflow: TextOverflow.ellipsis, // ✅ dài quá thì hiện ...
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: isDark ? Colors.white : Colors.black87,
+                                  color:
+                                  isDark ? Colors.white : Colors.black87,
                                 ),
                               ),
                             );
@@ -1099,108 +990,33 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                   Row(
                     children: [
                       Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _tempSoNgay = 14;
-                              _tempDateFilterType = 'days';
-                              _tempSingleDate = null;
-                              _tempDateRange = null;
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                            decoration: BoxDecoration(
-                              color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
-                                  ? const Color(0xFF6366F1).withOpacity(0.1)
-                                  : Colors.transparent,
-                              border: Border.all(
-                                color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
-                                    ? const Color(0xFF6366F1)
-                                    : (isDark ? Colors.white24 : Colors.grey.shade300),
-                                width: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14 ? 2 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Text(
-                                  '14 ngày gần nhất',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    color: (_tempDateFilterType == 'days' || _tempDateFilterType == 'none') && _tempSoNgay == 14
-                                        ? const Color(0xFF6366F1)
-                                        : (isDark ? Colors.white : Colors.black87),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '(Mặc định)',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: isDark ? Colors.white54 : Colors.grey.shade600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                        child: _buildPresetOption(
+                          isDark: isDark,
+                          label: '14 ngày gần nhất',
+                          sublabel: '(Mặc định)',
+                          selected: _isSelected('days', 14) ||
+                              _isSelected('none', 14),
+                          onTap: () => setState(() {
+                            _tempSoNgay = 14;
+                            _tempDateFilterType = 'days';
+                            _tempSingleDate = null;
+                            _tempDateRange = null;
+                          }),
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _tempSoNgay = 30;
-                              _tempDateFilterType = 'days';
-                              _tempSingleDate = null;
-                              _tempDateRange = null;
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                            decoration: BoxDecoration(
-                              color: _tempDateFilterType == 'days' && _tempSoNgay == 30
-                                  ? const Color(0xFF6366F1).withOpacity(0.1)
-                                  : Colors.transparent,
-                              border: Border.all(
-                                color: _tempDateFilterType == 'days' && _tempSoNgay == 30
-                                    ? const Color(0xFF6366F1)
-                                    : (isDark ? Colors.white24 : Colors.grey.shade300),
-                                width: _tempDateFilterType == 'days' && _tempSoNgay == 30 ? 2 : 1,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              children: [
-                                Text(
-                                  '30 ngày gần nhất',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: _tempDateFilterType == 'days' && _tempSoNgay == 30
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    color: _tempDateFilterType == 'days' && _tempSoNgay == 30
-                                        ? const Color(0xFF6366F1)
-                                        : (isDark ? Colors.white : Colors.black87),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '(Mở rộng)',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: isDark ? Colors.white54 : Colors.grey.shade600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                        child: _buildPresetOption(
+                          isDark: isDark,
+                          label: '30 ngày gần nhất',
+                          sublabel: '(Mở rộng)',
+                          selected: _isSelected('days', 30),
+                          onTap: () => setState(() {
+                            _tempSoNgay = 30;
+                            _tempDateFilterType = 'days';
+                            _tempSingleDate = null;
+                            _tempDateRange = null;
+                          }),
                         ),
                       ),
                     ],
@@ -1208,156 +1024,40 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                   const SizedBox(height: 12),
 
                   // Single date option
-                  InkWell(
+                  _buildDateOption(
+                    isDark: isDark,
+                    icon: Icons.calendar_today,
+                    title: 'Chọn một ngày',
+                    subtitle: _tempDateFilterType == 'single' &&
+                        _tempSingleDate != null
+                        ? DateFormat('dd/MM/yyyy').format(_tempSingleDate!)
+                        : null,
+                    selected: _tempDateFilterType == 'single',
                     onTap: _selectSingleDate,
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _tempDateFilterType == 'single'
-                            ? const Color(0xFF6366F1).withOpacity(0.1)
-                            : Colors.transparent,
-                        border: Border.all(
-                          color: _tempDateFilterType == 'single'
-                              ? const Color(0xFF6366F1)
-                              : (isDark ? Colors.white24 : Colors.grey.shade300),
-                          width: _tempDateFilterType == 'single' ? 2 : 1,
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.calendar_today,
-                            color: _tempDateFilterType == 'single'
-                                ? const Color(0xFF6366F1)
-                                : (isDark ? Colors.white60 : Colors.black54),
-                            size: 20,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Chọn một ngày',
-                                  style: TextStyle(
-                                    fontWeight: _tempDateFilterType == 'single'
-                                        ? FontWeight.w600
-                                        : FontWeight.normal,
-                                    color: _tempDateFilterType == 'single'
-                                        ? const Color(0xFF6366F1)
-                                        : (isDark ? Colors.white : Colors.black87),
-                                  ),
-                                ),
-                                if (_tempSingleDate != null && _tempDateFilterType == 'single') ...[
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    DateFormat('dd/MM/yyyy').format(_tempSingleDate!),
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: isDark ? Colors.white60 : Colors.black54,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          if (_tempDateFilterType == 'single')
-                            IconButton(
-                              icon: const Icon(Icons.clear, size: 20),
-                              onPressed: () {
-                                setState(() {
-                                  _tempSingleDate = null;
-                                  _tempDateFilterType = 'none';
-                                  _tempSoNgay = 14;
-                                });
-                              },
-                              color: const Color(0xFF6366F1),
-                            ),
-                        ],
-                      ),
-                    ),
+                    onClear: () => setState(() {
+                      _tempSingleDate = null;
+                      _tempDateFilterType = 'none';
+                      _tempSoNgay = 14;
+                    }),
                   ),
                   const SizedBox(height: 12),
 
                   // Date range option
-                  InkWell(
+                  _buildDateOption(
+                    isDark: isDark,
+                    icon: Icons.date_range,
+                    title: 'Chọn khoảng thời gian',
+                    subtitle: _tempDateFilterType == 'range' &&
+                        _tempDateRange != null
+                        ? '${DateFormat('dd/MM/yyyy').format(_tempDateRange!.start)} - ${DateFormat('dd/MM/yyyy').format(_tempDateRange!.end)}'
+                        : null,
+                    selected: _tempDateFilterType == 'range',
                     onTap: _selectDateRange,
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _tempDateFilterType == 'range'
-                            ? const Color(0xFF6366F1).withOpacity(0.1)
-                            : Colors.transparent,
-                        border: Border.all(
-                          color: _tempDateFilterType == 'range'
-                              ? const Color(0xFF6366F1)
-                              : (isDark ? Colors.white24 : Colors.grey.shade300),
-                          width: _tempDateFilterType == 'range' ? 2 : 1,
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.date_range,
-                            color: _tempDateFilterType == 'range'
-                                ? const Color(0xFF6366F1)
-                                : (isDark ? Colors.white60 : Colors.black54),
-                            size: 20,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Chọn khoảng thời gian',
-                                  style: TextStyle(
-                                    fontWeight: _tempDateFilterType == 'range'
-                                        ? FontWeight.w600
-                                        : FontWeight.normal,
-                                    color: _tempDateFilterType == 'range'
-                                        ? const Color(0xFF6366F1)
-                                        : (isDark ? Colors.white : Colors.black87),
-                                  ),
-                                ),
-                                if (_tempDateRange != null && _tempDateFilterType == 'range') ...[
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    '${DateFormat('dd/MM/yyyy').format(_tempDateRange!.start)} - ${DateFormat('dd/MM/yyyy').format(_tempDateRange!.end)}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: isDark ? Colors.white60 : Colors.black54,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          if (_tempDateFilterType == 'range')
-                            IconButton(
-                              icon: const Icon(Icons.clear, size: 20),
-                              onPressed: () {
-                                setState(() {
-                                  _tempDateRange = null;
-                                  _tempDateFilterType = 'none';
-                                  _tempSoNgay = 14;
-                                });
-                              },
-                              color: const Color(0xFF6366F1),
-                            ),
-                        ],
-                      ),
-                    ),
+                    onClear: () => setState(() {
+                      _tempDateRange = null;
+                      _tempDateFilterType = 'none';
+                      _tempSoNgay = 14;
+                    }),
                   ),
                   const SizedBox(height: 24),
 
@@ -1371,9 +1071,12 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                             Navigator.pop(context);
                           },
                           style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            padding:
+                            const EdgeInsets.symmetric(vertical: 14),
                             side: BorderSide(
-                              color: isDark ? Colors.white24 : Colors.grey.shade300,
+                              color: isDark
+                                  ? Colors.white24
+                                  : Colors.grey.shade300,
                             ),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
@@ -1382,7 +1085,8 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                           child: Text(
                             'Đặt lại',
                             style: TextStyle(
-                              color: isDark ? Colors.white70 : Colors.black87,
+                              color:
+                              isDark ? Colors.white70 : Colors.black87,
                             ),
                           ),
                         ),
@@ -1391,13 +1095,19 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                       Expanded(
                         child: ElevatedButton(
                           onPressed: () {
-                            widget.onApply(_tempMaMon, _tempDateRange, _tempSingleDate, _tempDateFilterType, _tempSoNgay);
+                            widget.onApply(
+                                _tempMaMon,
+                                _tempDateRange,
+                                _tempSingleDate,
+                                _tempDateFilterType,
+                                _tempSoNgay);
                             Navigator.pop(context);
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF6366F1),
                             foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            padding:
+                            const EdgeInsets.symmetric(vertical: 14),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
@@ -1415,6 +1125,109 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
       ),
     );
   }
+
+  Widget _buildPresetOption({
+    required bool isDark,
+    required String label,
+    required String sublabel,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: _optionDecoration(selected, isDark),
+        child: Column(
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                color: selected
+                    ? const Color(0xFF6366F1)
+                    : (isDark ? Colors.white : Colors.black87),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              sublabel,
+              style: TextStyle(
+                fontSize: 11,
+                color: isDark ? Colors.white54 : Colors.grey.shade600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDateOption({
+    required bool isDark,
+    required IconData icon,
+    required String title,
+    required String? subtitle,
+    required bool selected,
+    required VoidCallback onTap,
+    required VoidCallback onClear,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: _optionDecoration(selected, isDark),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              color: selected
+                  ? const Color(0xFF6366F1)
+                  : (isDark ? Colors.white60 : Colors.black54),
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight:
+                      selected ? FontWeight.w600 : FontWeight.normal,
+                      color: selected
+                          ? const Color(0xFF6366F1)
+                          : (isDark ? Colors.white : Colors.black87),
+                    ),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? Colors.white60 : Colors.black54,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (selected)
+              IconButton(
+                icon: const Icon(Icons.clear, size: 20),
+                onPressed: onClear,
+                color: const Color(0xFF6366F1),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _AttendanceDetailSheet extends StatelessWidget {
@@ -1422,48 +1235,11 @@ class _AttendanceDetailSheet extends StatelessWidget {
 
   const _AttendanceDetailSheet({required this.item});
 
-
-
-  String _getAttendanceTypeChamVao() {
-    final anhVao = item['AnhVao']?.toString() ?? '';
-
-    // Nếu đều rỗng → Vân tay
-    if (anhVao.isEmpty) {
-      return 'Vân tay';
-    }
-
-    // Nếu có chữ CAMAI → Khuôn mặt
-    if (anhVao.contains('CAMAI')) {
-      return 'Khuôn mặt';
-    }
-
-    // Mặc định
-    return 'MSSV';
-  }
-
-  String _getAttendanceTypeChamRa() {
-    final anhRa  = item['AnhRa']?.toString() ?? '';
-
-    // Nếu đều rỗng → Vân tay
-    if (anhRa.isEmpty) {
-      return 'Vân tay';
-    }
-
-    // Nếu có chữ CAMAI → Khuôn mặt
-    if (anhRa.contains('CAMAI')) {
-      return 'Khuôn mặt';
-    }
-
-    // Mặc định
-    return 'MSSV';
-  }
-
   bool _isIncompleteCheckout() {
     final thoiGianKT = item['THOIGIANKT'];
     if (thoiGianKT == null) return false;
     try {
-      final dateTime = _parseServerDateTime(thoiGianKT);
-      return dateTime.year == 1900;
+      return _laThoiGianRong(_parseServerDateTime(thoiGianKT));
     } catch (e) {
       return false;
     }
@@ -1473,44 +1249,39 @@ class _AttendanceDetailSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isIncomplete = _isIncompleteCheckout();
-    final attendanceTypeAnhVao = _getAttendanceTypeChamVao();
-    final attendanceTypeAnhRa = _getAttendanceTypeChamRa();
+    final attendanceTypeAnhVao = _loaiDiemDanh(item['AnhVao']);
+    final attendanceTypeAnhRa = _loaiDiemDanh(item['AnhRa']);
+
     // Parse data
     final tenMon = item['tenmon'] ?? 'N/A';
     final maMon = item['mamon'] ?? 'N/A';
     final tenNhom = item['tennhom'] ?? 'N/A';
-    final hoTen = item['hoten'] ?? 'N/A';
-    final maSo = item['maso'] ?? 'N/A';
-    final ngaySinh = item['ngaysinh'] ?? 'N/A';
-    final tenLop = item['tenlop'] ?? 'N/A';
     final soTietPb = item['sotietpb']?.toString() ?? 'N/A';
     final hocKy = item['hocky']?.toString() ?? 'N/A';
     final nienKhoa = item['nienkhoa'] ?? 'N/A';
     final monThucHanh = item['MonThucHanh'] == true ? 'Có' : 'Không';
-    final anhVaoUrl = item['AnhVao']?.toString() ?? 'N/A';
-    final anhRaUrl = item['AnhRa']?.toString() ?? 'N/A';
+    final anhVaoUrl = _chuanHoaAnh(item['AnhVao']);
+    final anhRaUrl = _chuanHoaAnh(item['AnhRa']);
 
     String timeInFull = 'N/A';
     String timeOutFull = 'N/A';
     String dateStr = '';
 
     if (item['THOIGIANBD'] != null) {
-      print(item['THOIGIANBD'] + "Thoi Gina");
       try {
         final dt = _parseServerDateTime(item['THOIGIANBD']);
-        timeInFull = DateFormat('HH:mm - dd/MM/yyyy').format(dt.toLocal());
-        dateStr = DateFormat('EEEE, dd/MM/yyyy', 'vi').format(dt.toLocal());
+        timeInFull = DateFormat('HH:mm - dd/MM/yyyy').format(dt);
+        dateStr = DateFormat('EEEE, dd/MM/yyyy', 'vi').format(dt);
       } catch (e) {}
     }
 
     if (item['THOIGIANKT'] != null) {
       try {
         final dt = _parseServerDateTime(item['THOIGIANKT']);
-        if (dt.year == 1899) {
-          timeOutFull = 'Chưa điểm danh ra';
-        } else {
-          timeOutFull = DateFormat('HH:mm - dd/MM/yyyy').format(dt.toLocal());
-        }
+        // Mốc rỗng (01/01/1900) → "Chưa điểm danh ra"
+        timeOutFull = _laThoiGianRong(dt)
+            ? 'Chưa điểm danh ra'
+            : DateFormat('HH:mm - dd/MM/yyyy').format(dt);
       } catch (e) {}
     }
 
@@ -1522,11 +1293,11 @@ class _AttendanceDetailSheet extends StatelessWidget {
         return Container(
           decoration: BoxDecoration(
             color: isDark ? Colors.grey.shade900 : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            borderRadius:
+            const BorderRadius.vertical(top: Radius.circular(20)),
           ),
           child: Column(
             children: [
-              // Handle bar
               const SizedBox(height: 12),
               Container(
                 width: 40,
@@ -1540,7 +1311,8 @@ class _AttendanceDetailSheet extends StatelessWidget {
 
               // Header
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(
@@ -1575,7 +1347,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
                   controller: scrollController,
                   padding: const EdgeInsets.all(20),
                   children: [
-                    // Status Card
                     if (isIncomplete)
                       Container(
                         padding: const EdgeInsets.all(16),
@@ -1598,14 +1369,17 @@ class _AttendanceDetailSheet extends StatelessWidget {
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment:
+                                CrossAxisAlignment.start,
                                 children: [
                                   Text(
                                     'Chưa hoàn thành',
                                     style: TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
-                                      color: isDark ? Colors.amber.shade100 : Colors.amber.shade900,
+                                      color: isDark
+                                          ? Colors.amber.shade100
+                                          : Colors.amber.shade900,
                                     ),
                                   ),
                                   const SizedBox(height: 2),
@@ -1613,7 +1387,9 @@ class _AttendanceDetailSheet extends StatelessWidget {
                                     'Bạn chưa điểm danh ra',
                                     style: TextStyle(
                                       fontSize: 13,
-                                      color: isDark ? Colors.amber.shade200 : Colors.amber.shade800,
+                                      color: isDark
+                                          ? Colors.amber.shade200
+                                          : Colors.amber.shade800,
                                     ),
                                   ),
                                 ],
@@ -1645,13 +1421,10 @@ class _AttendanceDetailSheet extends StatelessWidget {
                     _buildSection(
                       isDark: isDark,
                       title: 'Thông tin điểm danh',
-                      icon: Icons.face_retouching_natural, // Đã đổi từ vân tay sang khuôn mặt
+                      icon: Icons.face_retouching_natural,
                       children: [
                         _buildInfoRow(isDark, 'Ngày điểm danh', dateStr),
-
                         const SizedBox(height: 12),
-
-                        // Điểm danh vào
                         _buildFaceAttendanceCard(
                           context: context,
                           isDark: isDark,
@@ -1659,13 +1432,10 @@ class _AttendanceDetailSheet extends StatelessWidget {
                           icon: Icons.login_rounded,
                           time: timeInFull,
                           method: attendanceTypeAnhVao,
-                          imageUrl: anhVaoUrl, // URL ảnh khuôn mặt lúc vào
+                          imageUrl: anhVaoUrl,
                           color: Colors.green,
                         ),
-
                         const SizedBox(height: 12),
-
-                        // Điểm danh ra
                         _buildFaceAttendanceCard(
                           context: context,
                           isDark: isDark,
@@ -1673,7 +1443,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
                           icon: Icons.logout_rounded,
                           time: timeOutFull,
                           method: attendanceTypeAnhRa,
-                          imageUrl: anhRaUrl, // URL ảnh khuôn mặt lúc ra
+                          imageUrl: anhRaUrl,
                           color: isIncomplete ? Colors.amber : Colors.blue,
                           isIncomplete: isIncomplete,
                         ),
@@ -1681,51 +1451,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
                     ),
 
                     const SizedBox(height: 20),
-
-                    // Student Info Section
-                    // _buildSection(
-                    //   isDark: isDark,
-                    //   title: 'Thông tin sinh viên',
-                    //   icon: Icons.person,
-                    //   children: [
-                    //     _buildInfoRow(isDark, 'Họ và tên', hoTen),
-                    //     _buildInfoRow(isDark, 'Mã số SV', maSo),
-                    //     _buildInfoRow(isDark, 'Ngày sinh', ngaySinh),
-                    //     if (tenLop.isNotEmpty && tenLop != 'N/A')
-                    //       _buildInfoRow(isDark, 'Lớp', tenLop),
-                    //   ],
-                    // ),
-
-                    // const SizedBox(height: 20),
-
-                    // Technical Info (Collapsible)
-                    // if (item['IDGIOHOC'] != null)
-                    //   ExpansionTile(
-                    //     tilePadding: EdgeInsets.zero,
-                    //     backgroundColor: Colors.transparent,
-                    //     collapsedBackgroundColor: Colors.transparent,
-                    //     title: Text(
-                    //       'Thông tin kỹ thuật',
-                    //       style: TextStyle(
-                    //         fontSize: 14,
-                    //         fontWeight: FontWeight.w600,
-                    //         color: isDark ? Colors.white60 : Colors.black54,
-                    //       ),
-                    //     ),
-                    //     children: [
-                    //       _buildInfoRow(isDark, 'ID Giờ học', item['IDGIOHOC']?.toString() ?? 'N/A'),
-                    //       _buildInfoRow(isDark, 'ID Lịch dạy', item['IDLICHDAY']?.toString() ?? 'N/A'),
-                    //       _buildInfoRow(isDark, 'ID Sinh viên', item['IDSV']?.toString() ?? 'N/A'),
-                    //       if (item['NgayTao'] != null)
-                    //         _buildInfoRow(
-                    //           isDark,
-                    //           'Ngày tạo',
-                    //           DateFormat('HH:mm:ss - dd/MM/yyyy').format(
-                    //             _parseServerDateTime(item['NgayTao']).toLocal(),
-                    //           ),
-                    //         ),
-                    //     ],
-                    //   ),
                   ],
                 ),
               ),
@@ -1752,7 +1477,9 @@ class _AttendanceDetailSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: isDark ? Colors.grey.shade800.withOpacity(0.5) : Colors.grey.shade50,
+        color: isDark
+            ? Colors.grey.shade800.withOpacity(0.5)
+            : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: isIncomplete
@@ -1762,7 +1489,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Icon trạng thái
           Container(
             width: 40,
             height: 40,
@@ -1773,8 +1499,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
             child: Icon(icon, color: color, size: 22),
           ),
           const SizedBox(width: 12),
-
-          // Chi tiết text
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1793,16 +1517,20 @@ class _AttendanceDetailSheet extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
-                    color: isIncomplete ? Colors.amber.shade700 : (isDark ? Colors.white70 : Colors.black87),
+                    color: isIncomplete
+                        ? Colors.amber.shade700
+                        : (isDark ? Colors.white70 : Colors.black87),
                   ),
                 ),
                 const SizedBox(height: 4),
                 Row(
                   children: [
-                    Icon(Icons.face, size: 13, color: isDark ? Colors.white38 : Colors.black38),
+                    Icon(Icons.face,
+                        size: 13,
+                        color: isDark ? Colors.white38 : Colors.black38),
                     const SizedBox(width: 4),
                     Text(
-                      method.isEmpty ? 'Nhận diện khuôn mặt' : method,
+                      method,
                       style: TextStyle(
                         fontSize: 11,
                         color: isDark ? Colors.white38 : Colors.black45,
@@ -1813,8 +1541,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
               ],
             ),
           ),
-
-          // Thumbnail ảnh khuôn mặt (Bấm vào để xem rõ nét)
           if (hasImage) ...[
             const SizedBox(width: 8),
             GestureDetector(
@@ -1828,7 +1554,8 @@ class _AttendanceDetailSheet extends StatelessWidget {
                       width: 52,
                       height: 52,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _buildPlaceholderImage(isDark),
+                      errorBuilder: (_, __, ___) =>
+                          _buildPlaceholderImage(isDark),
                     ),
                   ),
                   Positioned(
@@ -1840,7 +1567,8 @@ class _AttendanceDetailSheet extends StatelessWidget {
                         color: Colors.black54,
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      child: const Icon(Icons.zoom_in, color: Colors.white, size: 12),
+                      child: const Icon(Icons.zoom_in,
+                          color: Colors.white, size: 12),
                     ),
                   ),
                 ],
@@ -1854,25 +1582,33 @@ class _AttendanceDetailSheet extends StatelessWidget {
     );
   }
 
-  void _showFullImage(BuildContext context, String imageUrl, String title, String time) {
+  void _showFullImage(
+      BuildContext context, String imageUrl, String title, String time) {
     showDialog(
       context: context,
       barrierColor: Colors.black87,
       builder: (ctx) => Dialog(
         backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        insetPadding:
+        const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header dialog
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    '$title • $time',
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                  Expanded(
+                    child: Text(
+                      '$title • $time',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.white70),
@@ -1881,7 +1617,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
                 ],
               ),
             ),
-            // Ảnh có thể zoom/pan
             ClipRRect(
               borderRadius: BorderRadius.circular(16),
               child: InteractiveViewer(
@@ -1894,9 +1629,18 @@ class _AttendanceDetailSheet extends StatelessWidget {
                     if (progress == null) return child;
                     return const SizedBox(
                       height: 250,
-                      child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                      child: Center(
+                          child: CircularProgressIndicator(
+                              color: Colors.white)),
                     );
                   },
+                  errorBuilder: (_, __, ___) => const SizedBox(
+                    height: 250,
+                    child: Center(
+                      child: Icon(Icons.broken_image,
+                          color: Colors.white54, size: 48),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1916,10 +1660,13 @@ class _AttendanceDetailSheet extends StatelessWidget {
       width: 52,
       height: 52,
       decoration: BoxDecoration(
-        color: isDark ? Colors.white.withOpacity(0.05) : Colors.grey.shade200,
+        color: isDark
+            ? Colors.white.withOpacity(0.05)
+            : Colors.grey.shade200,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Icon(Icons.no_photography_outlined, size: 20, color: isDark ? Colors.white24 : Colors.black26),
+      child: Icon(Icons.no_photography_outlined,
+          size: 20, color: isDark ? Colors.white24 : Colors.black26),
     );
   }
 
@@ -1932,7 +1679,8 @@ class _AttendanceDetailSheet extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isDark ? Colors.grey.shade800.withOpacity(0.5) : Colors.grey.shade50,
+        color:
+        isDark ? Colors.grey.shade800.withOpacity(0.5) : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade200,
@@ -1949,10 +1697,10 @@ class _AttendanceDetailSheet extends StatelessWidget {
                   color: const Color(0xFF6366F1).withOpacity(0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(
-                  icon,
+                child: const Icon(
+                  Icons.school,
                   size: 20,
-                  color: const Color(0xFF6366F1),
+                  color: Color(0xFF6366F1),
                 ),
               ),
               const SizedBox(width: 12),
@@ -1978,7 +1726,6 @@ class _AttendanceDetailSheet extends StatelessWidget {
       String label,
       String value, {
         Color? valueColor,
-        Widget? valueWidget,
       }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1998,209 +1745,42 @@ class _AttendanceDetailSheet extends StatelessWidget {
           const SizedBox(width: 16),
           Expanded(
             flex: 3,
-            child: valueWidget ??
-                Text(
-                  value,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: valueColor ?? (isDark ? Colors.white : Colors.black87),
-                  ),
-                  textAlign: TextAlign.right,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMethodBadge(String type, bool isDark) {
-    final isFingerprint = type == 'Vân tay';
-    final baseColor = isFingerprint ? Colors.green : Colors.blue;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: isDark ? baseColor.shade900.withOpacity(0.5) : baseColor.shade100,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isFingerprint ? Icons.fingerprint : Icons.credit_card,
-            size: 14,
-            color: isDark ? baseColor.shade300 : baseColor.shade700,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            type,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: isDark ? baseColor.shade300 : baseColor.shade700,
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: valueColor ?? (isDark ? Colors.white : Colors.black87),
+              ),
+              textAlign: TextAlign.right,
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAttendanceBlock({
-    required bool isDark,
-    required String title,
-    required IconData icon,
-    required String time,
-    required String method,
-    required MaterialColor color,
-    bool isIncomplete = false,
-  }) {
-    final isFingerprint = method ;
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark
-            ? color.withValues(alpha: 0.1)
-            : color.shade50.withValues(alpha : 0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark
-              ? color.shade700.withValues( alpha: 0.3)
-              : color.shade200,
-          width: 1.5,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? color.shade900.withValues(alpha: 0.5)
-                      : color.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  icon,
-                  size: 18,
-                  color: isDark ? color.shade300 : color.shade700,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  title,
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.black
-                  ),
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? color.shade900.withValues(alpha: 0.7)
-                      : color.shade100,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: isDark ? color.shade700 : color.shade300,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    (time.contains("Chưa điểm danh ra"))
-                        ? Text(
-                      "Chưa xác định",
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : Colors.black54,
-
-                      ),
-                    )
-                        : Row(
-                      children: [
-                        Icon(
-                          isFingerprint == 'Vân tay'
-                              ? Icons.fingerprint
-                              : isFingerprint == 'Khuôn mặt'
-                              ? Icons.face
-                              : Icons.credit_card,
-                          size: 14,
-                          color: isDark ? Colors.white : Colors.black,
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          method,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.white : Colors.black,
-                          ),
-                        ),
-                      ],
-                    ),
-
-
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Icon(
-                Icons.access_time,
-                size: 16,
-                color: isDark ? color.shade400 : color.shade600,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  time,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          if (isIncomplete) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.warning_amber_rounded,
-                  size: 14,
-                  color: Colors.amber.shade700,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Chưa hoàn thành',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: isDark ? Colors.amber.shade300 : Colors.amber.shade800,
-                  ),
-                ),
-              ],
-            ),
-          ],
         ],
       ),
     );
   }
 }
 
+/// Mờ dần + trượt lên khi dòng lịch sử xuất hiện
+class _FadeSlide extends StatelessWidget {
+  final int index;
+  final Widget child;
+  const _FadeSlide({required this.index, required this.child});
 
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: 250 + (index * 60).clamp(0, 400)),
+      curve: Curves.easeOut,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 16 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: child,
+    );
+  }
+}

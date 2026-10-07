@@ -274,6 +274,21 @@ class AuthService {
             await _storage.write(key: _keyAccessToken, value: newAccessToken);
             await _storage.write(key: _keyRefreshToken, value: newRefreshToken);
 
+            try {
+              Map<String, dynamic> decodedToken = JwtDecoder.decode(newAccessToken);
+              if (decodedToken['mssv'] != null) {
+                await _storage.write(key: _keyMssv, value: decodedToken['mssv'].toString());
+              }
+              if (decodedToken['id_sinh_vien'] != null) {
+                await _storage.write(key: _keyIdSinhVien, value: decodedToken['id_sinh_vien'].toString());
+              }
+              if (decodedToken['user_id'] != null) {
+                await _storage.write(key: _keyUserId, value: decodedToken['user_id'].toString());
+              }
+            } catch (e) {
+              print('⚠️ Không thể giải mã JWT khi refresh: $e');
+            }
+
             _lastRefreshTime = DateTime.now();
 
             print('✅ Refresh token thành công (Đã lưu refresh_token mới)');
@@ -300,12 +315,10 @@ class AuthService {
       }
     } on TimeoutException catch (e) {
       print('❌ Lỗi refresh token timeout: $e');
-      await _handleAuthenticationFailure();
       _completerFinish(false);
       return false;
     } catch (e) {
       print('❌ Lỗi refresh token: $e');
-      await _handleAuthenticationFailure();
       _completerFinish(false);
       return false;
     }
@@ -855,11 +868,8 @@ class AuthService {
       final accessToken = await _storage.read(key: _keyAccessToken);
       if (accessToken == null || accessToken.isEmpty) return false;
 
-      // Nếu hết hạn, thử refresh (chỉ refresh nếu chưa ở trạng thái unauthenticated)
+      // Nếu access token đã hết hạn, tự động refresh ngầm
       if (JwtDecoder.isExpired(accessToken)) {
-        if (_authStateManager.currentState == AuthState.unauthenticated) {
-          return false;
-        }
         return await refreshAccessToken(failedToken: accessToken);
       }
 

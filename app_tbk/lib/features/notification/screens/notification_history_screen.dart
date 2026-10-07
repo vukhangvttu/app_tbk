@@ -4,8 +4,9 @@ import 'package:app_tbk/features/notification/screens/notification_detail_screen
 import 'package:app_tbk/features/notification/services/notification_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:app_tbk/features/notification/utils/notification_filter.dart';
 
-class NotificationHistory {
+class NotificationHistory implements FilterableNotification {
   final int id;
   final String mssv;
   final String title;
@@ -13,6 +14,8 @@ class NotificationHistory {
   final String type;
   final DateTime timestamp;
   final bool is_read;
+  @override
+  final String? subject;
 
   NotificationHistory({
     required this.id,
@@ -22,9 +25,16 @@ class NotificationHistory {
     required this.type,
     required this.timestamp,
     required this.is_read,
+    this.subject,
   });
 
-
+  static String? _readSubject(Map<String, dynamic> json) {
+    for (final k in const ['subject', 'tenMon', 'ten_mon', 'monHoc', 'mon_hoc', 'tenHocPhan']) {
+      final v = json[k]?.toString().trim();
+      if (v != null && v.isNotEmpty && v != 'null') return v;
+    }
+    return null;
+  }
 
   factory NotificationHistory.fromJson(Map<String, dynamic> json) {
     return NotificationHistory(
@@ -39,6 +49,7 @@ class NotificationHistory {
           json['is_read']?.toString() == 'true' ||
           json['isRead'] == true ||
           json['isRead'] == 1,
+      subject: _readSubject(json),
     );
   }
 
@@ -167,7 +178,7 @@ class NotificationHistory {
     return DateTime.now();
   }
 
-  NotificationHistory copyWith({bool? read}) {
+  NotificationHistory copyWith({bool? read, String? subject}) {
     return NotificationHistory(
       id: id,
       mssv: mssv,
@@ -176,6 +187,7 @@ class NotificationHistory {
       type: type,
       timestamp: timestamp,
       is_read: read ?? this.is_read,
+      subject: subject ?? this.subject,
     );
   }
 
@@ -266,6 +278,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     if (allIndex != -1) {
       if (!_allNotifications[allIndex].is_read && updatedNotif.is_read) {
         changed = true;
+        if (_serverUnreadCount > 0) _serverUnreadCount--;
       }
       _allNotifications[allIndex] = updatedNotif;
     }
@@ -292,6 +305,9 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   bool _isLoading = false;     // Đang load không?
   bool _hasError = false;      // Có lỗi không?
 
+  // THỐNG KÊ TỪ SERVER
+  int _serverTotalCount = 0;
+  int _serverUnreadCount = 0;
 
 // PUBLIC METHOD
 //   void loadTab() {
@@ -305,10 +321,16 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
 
   bool _tabTransitionLoading = false;
+  final ScrollController _scrollController = ScrollController();
+  int _page = 1;
+  final int _limit = 20;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
@@ -356,17 +378,36 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     setState(() {
       _isLoading = true;
       _hasError = false;
+      _page = 1; // Reset phân trang
+      _hasMore = true;
     });
 
     try {
-      final notifications = await NotificationHistoryService.fetchNotifications(context);
+      // Tải dữ liệu và thống kê song song để tiết kiệm thời gian
+      final results = await Future.wait([
+        NotificationHistoryService.fetchNotifications(
+          context,
+          page: _page,
+          limit: _limit,
+        ),
+        NotificationHistoryService.getNotificationStats(context),
+      ]);
 
-      if (!mounted) return; // ✅ Kiểm tra mounted trước khi setState
+      final response = results[0] as Map<String, dynamic>;
+      final stats = results[1] as Map<String, int>;
+
+      if (!mounted) return;
 
       setState(() {
+        final notifications = response['data'] as List<NotificationHistory>;
+        _hasMore = response['has_more'] as bool;
+
+        _serverTotalCount = stats['total'] ?? 0;
+        _serverUnreadCount = stats['unread'] ?? 0;
+
         _allNotifications = notifications;
         _classNotifications = notifications.where((n) => n.type == 'CLASS').toList();
-        _examNotifications = notifications.where((n) => n.type == 'EXAM').toList();
+        _examNotifications = notifications.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList();
         _reminderNotifications = notifications.where((n) => n.type == 'REMINDER').toList();
 
         _isDataLoaded = true;
@@ -466,17 +507,35 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
       _tabLoading[tabIndex] = true;
       _isLoading = true;
       _hasError = false;
+      _page = 1;
+      _hasMore = true;
     });
 
     try {
-      final notifications = await NotificationHistoryService.fetchNotifications(context);
+      final results = await Future.wait([
+        NotificationHistoryService.fetchNotifications(
+          context,
+          page: _page,
+          limit: _limit,
+        ),
+        NotificationHistoryService.getNotificationStats(context),
+      ]);
 
-      if (!mounted) return; // ✅ Kiểm tra mounted trước khi setState
+      final response = results[0] as Map<String, dynamic>;
+      final stats = results[1] as Map<String, int>;
+
+      if (!mounted) return;
 
       setState(() {
+        final notifications = response['data'] as List<NotificationHistory>;
+        _hasMore = response['has_more'] as bool;
+
+        _serverTotalCount = stats['total'] ?? 0;
+        _serverUnreadCount = stats['unread'] ?? 0;
+
         _allNotifications = notifications;
         _classNotifications = notifications.where((n) => n.type == 'CLASS').toList();
-        _examNotifications = notifications.where((n) => n.type == 'EXAM').toList();
+        _examNotifications = notifications.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList();
         _reminderNotifications = notifications.where((n) => n.type == 'REMINDER').toList();
 
         _isDataLoaded = true;
@@ -539,12 +598,66 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   }
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _tabController.removeListener(_handleTabChange);
     _tabController.dispose();
     super.dispose();
   }
 
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      _loadMoreData();
+    }
+  }
 
+  Future<void> _loadMoreData() async {
+    if (!_hasMore || _isLoadingMore || _isLoading) return;
+
+    setState(() => _isLoadingMore = true);
+
+    try {
+      // Dùng Infinite Scroll - truyền before_id là ID của thông báo cuối cùng
+      int? beforeId;
+      if (_allNotifications.isNotEmpty) {
+        beforeId = _allNotifications.last.id;
+      }
+
+      final response = await NotificationHistoryService.fetchNotifications(
+        context,
+        page: _page + 1,
+        limit: _limit,
+        beforeId: beforeId,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _page++;
+        final newNotifications = response['data'] as List<NotificationHistory>;
+        _hasMore = response['has_more'] as bool;
+
+        if (newNotifications.isNotEmpty) {
+          // Chỉ thêm những thông báo chưa có
+          for (var notif in newNotifications) {
+            if (!_allNotifications.any((n) => n.id == notif.id)) {
+              _allNotifications.add(notif);
+              if (notif.type == 'CLASS') _classNotifications.add(notif);
+              if (notif.type == 'EXAM' || notif.type == 'EXAM_ADVANCE') _examNotifications.add(notif);
+              if (notif.type == 'REMINDER') _reminderNotifications.add(notif);
+            }
+          }
+        }
+      });
+    } catch (e) {
+      // Bỏ qua lỗi khi tải thêm để không ảnh hưởng UX
+      debugPrint("Load more error: $e");
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingMore = false);
+      }
+    }
+  }
 
   // Helper method để show error dialog
   void _showErrorDialog(String title, String message, {VoidCallback? onRetry}) {
@@ -703,20 +816,54 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   }
 
 
-  List<NotificationHistory> get _currentNotifications {
-    return switch (_currentTabIndex) {
-      0 => _allNotifications,
-      1 => _classNotifications,
-      2 => _examNotifications,
-      3 => _reminderNotifications,
-      _ => [],
-    };
+  NotificationFilter _filter = const NotificationFilter();
+
+  List<NotificationHistory> get _tabBaseNotifications => switch (_currentTabIndex) {
+        0 => _allNotifications,
+        1 => _classNotifications,
+        2 => _examNotifications,
+        3 => _reminderNotifications,
+        _ => [],
+      };
+
+  List<NotificationHistory> get _currentNotifications =>
+      _filter.apply(_tabBaseNotifications);
+
+  void _setFilter(NotificationFilter f) {
+    setState(() => _filter = f);
+    _autoLoadForFilter();
+  }
+
+  Future<void> _openFilterSheet() async {
+    final result = await showNotificationFilterSheet(
+      context,
+      current: _filter,
+      facets: NotificationFilter.subjectFacets(_tabBaseNotifications),
+      previewCount: (f) => f.apply(_tabBaseNotifications).length,
+    );
+    if (result != null && mounted) _setFilter(result);
+  }
+
+  /// Lọc chạy trên dữ liệu đã tải: nếu kết quả ít mà server còn dữ liệu cũ hơn
+  /// thì tải thêm (tối đa 10 trang).
+  Future<void> _autoLoadForFilter() async {
+    if (!_filter.hasCriteria) return;
+    var guard = 0;
+    while (mounted && _hasMore && !_isLoadingMore && !_isLoading &&
+        _currentNotifications.length < 15 && guard++ < 10) {
+      await _loadMoreData();
+    }
   }
 
   Map<String, int> get _statistics {
+    // Nếu tổng từ server < số lượng local đang hiện có, lấy local (để tránh lỗi hiển thị khi server lag)
+    final total = _serverTotalCount > _allNotifications.length ? _serverTotalCount : _allNotifications.length;
+    final unreadLocal = _allNotifications.where((n) => !n.is_read).length;
+    final unread = _serverUnreadCount > unreadLocal ? _serverUnreadCount : unreadLocal;
+
     return {
-      'total': _allNotifications.length,
-      'unread': _allNotifications.where((n) => !n.is_read).length,
+      'total': total,
+      'unread': unread,
       'class': _classNotifications.length,
       'exam': _examNotifications.length,
       'reminder': _reminderNotifications.length,
@@ -725,29 +872,50 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
 
   Future<void> _markAllAsRead() async {
+    // 1. Hỏi xác nhận trước
+    final confirm = await MarkAllReadDialog.show(
+      context,
+      unreadCount: _statistics['unread'] ?? 0,
+    );
+    if (confirm != true || !mounted) return;
+
+    // 2. Thực hiện
     try {
       await NotificationHistoryService.markAllAsRead(context);
-
       await _loadData(force: true);
       widget.onNotificationChanged?.call();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 8),
-                const Text('Đã đánh dấu tất cả là đã đọc'),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              // Container(
+              //   padding: const EdgeInsets.all(8),
+              //   decoration: BoxDecoration(
+              //     color: Colors.white.withValues(alpha: 0.2),
+              //     shape: BoxShape.circle,
+              //   ),
+              //   child: const Icon(Icons.done_all_rounded, color: Colors.white, size: 10),
+              // ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Đã đánh dấu tất cả là đã đọc',
+                  style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
+                ),
+              ),
+            ],
           ),
-        );
-      }
+          backgroundColor: Colors.green.shade600,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
     } catch (e) {
-      print('❌ Error marking all as read: $e');
+      debugPrint('❌ Error marking all as read: $e');
+      if (!mounted) return;
       _showErrorDialog(
         'Lỗi đánh dấu tất cả',
         'Không thể đánh dấu tất cả thông báo là đã đọc. Vui lòng thử lại.',
@@ -1056,20 +1224,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-
-    // final bool isCurrentTabLoading = _tabLoading[_currentTabIndex] == true;
-    // final bool isCurrentTabLoaded = _tabLoaded[_currentTabIndex] == true;
-
-    // ƯU TIÊN HIỂN THỊ LOADING KHI CHƯA CÓ DỮ LIỆU
-    // if (_loading && _currentNotifications.isEmpty) {
-    //   return Scaffold(
-    //     backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
-    //     appBar: AppBar(title: const Text('Lịch sử thông báo', style: TextStyle(fontWeight: FontWeight.bold))),
-    //     body: const Center(
-    //       child: CircularProgressIndicator(strokeWidth: 2.5),
-    //     ),
-    //   );
-    // }
+    final shown = _currentNotifications;
 
     return Scaffold(
       backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
@@ -1134,27 +1289,102 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         children: [
           _buildStatisticsCard(isDark),
           _buildTabBar(isDark, theme),
+          if (_allNotifications.isNotEmpty || _filter.isActive)
+            NotificationFilterBar(
+              filter: _filter,
+              items: _tabBaseNotifications,
+              onChanged: _setFilter,
+              onOpenSheet: _openFilterSheet,
+            ),
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : _hasError
-                ? _buildEmptyState(isDark) // hoặc có thể là placeholder
+                ? _buildEmptyState(isDark)
                 : _tabTransitionLoading
                 ? _buildTabSkeleton()
-                : _currentNotifications.isEmpty
-                ? _buildEmptyState(isDark)
-                : RefreshIndicator(
-              onRefresh: _refreshAll,
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                itemCount: _currentNotifications.length,
-                itemBuilder: (context, index) {
-                  return _buildNotificationCard(_currentNotifications[index], isDark);
-                },
-              ),
-            ),
+                : shown.isEmpty
+                ? (_filter.hasCriteria
+                    ? _buildFilteredEmptyState()
+                    : _buildEmptyState(isDark))
+                : _buildNotificationList(shown, isDark),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationList(List<NotificationHistory> shown, bool isDark) {
+    final entries = _filter.effectiveGroupByDay
+        ? NotificationFilter.buildEntries(shown)
+        : List<Object>.of(shown);
+    final showLoadMoreBtn = _filter.hasCriteria && _hasMore && !_isLoadingMore;
+    final extra = (_isLoadingMore || showLoadMoreBtn) ? 1 : 0;
+
+    return RefreshIndicator(
+      onRefresh: _refreshAll,
+      child: ListView.builder(
+        controller: _scrollController,
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        itemCount: entries.length + extra,
+        itemBuilder: (context, i) {
+          if (i >= entries.length) {
+            return _isLoadingMore
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(child: CircularProgressIndicator()))
+                : Center(
+                    child: TextButton.icon(
+                      onPressed: _loadMoreData,
+                      icon: const Icon(Icons.history_rounded),
+                      label: const Text('Tải thêm thông báo cũ hơn'),
+                    ),
+                  );
+          }
+          final e = entries[i];
+          if (e is NotificationDayHeader) {
+            return NotificationDayHeaderTile(header: e);
+          }
+          return _buildNotificationCard(e as NotificationHistory, isDark);
+        },
+      ),
+    );
+  }
+
+  Widget _buildFilteredEmptyState() {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.filter_alt_off_rounded, size: 56, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 16),
+            const Text('Không có thông báo phù hợp',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            Text(
+              _hasMore
+                  ? 'Thử tải thêm thông báo cũ hơn hoặc nới lỏng bộ lọc.'
+                  : 'Hãy nới lỏng bộ lọc.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            if (_hasMore)
+              FilledButton.tonalIcon(
+                onPressed: _loadMoreData,
+                icon: const Icon(Icons.history_rounded),
+                label: const Text('Tải thêm thông báo cũ hơn'),
+              ),
+            TextButton(
+              onPressed: () => _setFilter(const NotificationFilter()),
+              child: const Text('Xóa bộ lọc'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1944,3 +2174,207 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     }
   }
 }
+
+
+class MarkAllReadDialog extends StatelessWidget {
+  final int unreadCount;
+
+  const MarkAllReadDialog({super.key, required this.unreadCount});
+
+  static Future<bool?> show(BuildContext context, {required int unreadCount}) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (_) => MarkAllReadDialog(unreadCount: unreadCount),
+    );
+  }
+
+  /// Dark mode: làm sáng nhẹ + giảm bão hòa để màu không chói, không chìm.
+  static Color _accentFor(Color base, bool isDark) {
+    if (!isDark) return base;
+    final hsl = HSLColor.fromColor(base);
+    return hsl
+        .withLightness(hsl.lightness < 0.62 ? 0.64 : hsl.lightness)
+        .withSaturation(hsl.saturation.clamp(0.4, 0.8))
+        .toColor();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    final accent = _accentFor(theme.primaryColor, isDark);
+    final accentDeep = HSLColor.fromColor(accent)
+        .withLightness((HSLColor.fromColor(accent).lightness - 0.12).clamp(0.2, 0.9))
+        .toColor();
+    final onAccent = ThemeData.estimateBrightnessForColor(accent) == Brightness.dark
+        ? Colors.white
+        : const Color(0xFF111111);
+
+    // Nền trung tính (khớp Colors.grey[850]/[900] của màn hình), không ngả xanh.
+    final dialogBg = isDark ? const Color(0xFF262626) : Colors.white;
+    final titleColor = isDark ? const Color(0xFFF5F5F5) : const Color(0xFF111827);
+    final bodyColor = isDark ? const Color(0xFFA3A3A3) : const Color(0xFF6B7280);
+    final tonalBg = isDark
+        ? Colors.white.withValues(alpha: 0.08)
+        : const Color(0xFFF3F4F6);
+    final tonalFg = isDark ? const Color(0xFFE5E5E5) : const Color(0xFF374151);
+
+    return Dialog(
+      backgroundColor: dialogBg,
+      surfaceTintColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      elevation: isDark ? 0 : 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(28),
+        side: BorderSide(
+          color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.transparent,
+        ),
+      ),
+      child: Container(
+        // Ánh sáng nhẹ từ màu nhấn ở phía trên
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              accent.withValues(alpha: isDark ? 0.16 : 0.09),
+              dialogBg,
+            ],
+            stops: const [0.0, 0.5],
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 32, 24, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Icon: vòng tròn gradient đặc + glow
+            Center(
+              child: Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [accent, accentDeep],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: accent.withValues(alpha: isDark ? 0.40 : 0.35),
+                      blurRadius: 24,
+                      spreadRadius: 1,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Icon(Icons.done_all_rounded, size: 34, color: onAccent),
+              ),
+            ),
+            const SizedBox(height: 22),
+
+            Text(
+              'Đánh dấu tất cả đã đọc?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+                color: titleColor,
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            Text(
+              'Tất cả thông báo sẽ được chuyển sang trạng thái đã đọc.\n'
+                  'Bạn vẫn có thể xem lại trong lịch sử.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, height: 1.5, color: bodyColor),
+            ),
+
+            if (unreadCount > 0) ...[
+              const SizedBox(height: 16),
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: isDark ? 0.14 : 0.10),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.mark_email_unread_rounded, size: 16, color: accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        '$unreadCount thông báo chưa đọc',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: accent,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 26),
+
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    style: TextButton.styleFrom(
+                      backgroundColor: tonalBg,
+                      foregroundColor: tonalFg,
+                      minimumSize: const Size.fromHeight(50),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: const Text(
+                      'Hủy',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pop(context, true),
+                    icon: Icon(Icons.done_all_rounded, size: 20, color: onAccent),
+                    label: Text(
+                      'Xác nhận',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: onAccent,
+                      ),
+                    ),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: accent,
+                      foregroundColor: onAccent,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

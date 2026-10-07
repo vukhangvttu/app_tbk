@@ -1,10 +1,93 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+import 'package:app_tbk/features/version/services/app_version_service.dart';
+import 'package:app_tbk/features/version/widgets/app_update_dialog.dart';
 
 // ==================== ABOUT APP SCREEN ====================
 
-class AboutAppScreen extends StatelessWidget {
+class AboutAppScreen extends StatefulWidget {
   const AboutAppScreen({super.key});
+
+  @override
+  State<AboutAppScreen> createState() => _AboutAppScreenState();
+}
+
+class _AboutAppScreenState extends State<AboutAppScreen> {
+  String _version = '...';
+  bool _isCheckingUpdate = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _version = info.version;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _version = '1.0.0';
+        });
+      }
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_isCheckingUpdate) return;
+
+    setState(() {
+      _isCheckingUpdate = true;
+    });
+
+    try {
+      final result = await AppVersionService.checkVersion();
+
+      if (!mounted) return;
+
+      if (result.hasUpdate && result.appVersion != null) {
+        await AppUpdateDialog.show(
+          context,
+          appVersion: result.appVersion!,
+          currentVersion: result.currentVersion,
+          forceUpdate: result.forceUpdate,
+        );
+      } else if (result.errorMessage != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.errorMessage!),
+            backgroundColor: Colors.red[700],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ứng dụng đang ở phiên bản mới nhất (v$_version).'),
+            backgroundColor: Colors.green[700],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Lỗi kiểm tra bản cập nhật: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingUpdate = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,14 +134,14 @@ class AboutAppScreen extends StatelessWidget {
                     ],
                   ),
                   child: const Icon(
-                    Icons.apps_rounded,
+                    Icons.school_rounded,
                     size: 64,
                     color: Colors.white,
                   ),
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  'My Awesome App',
+                  'Lịch Sinh Viên VTTU',
                   style: TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.w700,
@@ -67,7 +150,7 @@ class AboutAppScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(
                     color: theme.primaryColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
@@ -76,7 +159,7 @@ class AboutAppScreen extends StatelessWidget {
                     ),
                   ),
                   child: Text(
-                    'Phiên bản 1.0.0',
+                    'Phiên bản $_version',
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -84,100 +167,68 @@ class AboutAppScreen extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(height: 16),
+
+                // Button Check Update
+                SizedBox(
+                  width: 220,
+                  child: ElevatedButton.icon(
+                    onPressed: _isCheckingUpdate ? null : _checkForUpdate,
+                    icon: _isCheckingUpdate
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(Icons.system_update_rounded, size: 18),
+                    label: Text(
+                      _isCheckingUpdate ? 'Đang kiểm tra...' : 'Kiểm tra bản cập nhật',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: theme.primaryColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 2,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
-          const SizedBox(height: 40),
+          const SizedBox(height: 32),
 
           // Features Section
           _buildSectionTitle('Tính năng chính', isDark),
           const SizedBox(height: 16),
           _buildFeatureCard(
-            icon: Icons.speed_rounded,
-            title: 'Hiệu suất cao',
-            description: 'Tối ưu hóa để mang lại trải nghiệm mượt mà',
+            icon: Icons.calendar_month_rounded,
+            title: 'Lịch học & Lịch thi',
+            description: 'Đồng bộ thời khóa biểu trực tiếp từ hệ thống trường',
             isDark: isDark,
             color: Colors.blue,
           ),
           const SizedBox(height: 12),
           _buildFeatureCard(
-            icon: Icons.security_rounded,
-            title: 'Bảo mật tuyệt đối',
-            description: 'Dữ liệu được mã hóa và bảo vệ an toàn',
+            icon: Icons.camera_front_rounded,
+            title: 'Điểm danh khuôn mặt',
+            description: 'Điểm danh nhanh chóng và bảo mật bằng FaceID',
             isDark: isDark,
             color: Colors.green,
           ),
           const SizedBox(height: 12),
           _buildFeatureCard(
-            icon: Icons.cloud_sync_rounded,
-            title: 'Đồng bộ đám mây',
-            description: 'Truy cập dữ liệu mọi lúc, mọi nơi',
+            icon: Icons.notifications_active_rounded,
+            title: 'Nhắc nhở thông minh',
+            description: 'Thông báo tiết học và sự kiện quan trọng đúng giờ',
             isDark: isDark,
             color: Colors.purple,
-          ),
-          const SizedBox(height: 12),
-          _buildFeatureCard(
-            icon: Icons.palette_rounded,
-            title: 'Giao diện đẹp mắt',
-            description: 'Thiết kế hiện đại, dễ sử dụng',
-            isDark: isDark,
-            color: Colors.orange,
-          ),
-          const SizedBox(height: 32),
-
-          // Important Notes
-          _buildSectionTitle('Lưu ý quan trọng', isDark),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: (isDark ? Colors.amber[900] : Colors.amber[50])
-                  ?.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: (isDark ? Colors.amber[800] : Colors.amber[200])!,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.warning_rounded,
-                      color: isDark ? Colors.amber[300] : Colors.amber[800],
-                      size: 24,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Điều khoản sử dụng',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.amber[200] : Colors.amber[900],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _buildNoteItem(
-                  'Bảo vệ thông tin cá nhân của bạn',
-                  isDark,
-                ),
-                _buildNoteItem(
-                  'Không chia sẻ mật khẩu với người khác',
-                  isDark,
-                ),
-                _buildNoteItem(
-                  'Cập nhật ứng dụng thường xuyên',
-                  isDark,
-                ),
-                _buildNoteItem(
-                  'Đọc kỹ chính sách bảo mật',
-                  isDark,
-                ),
-              ],
-            ),
           ),
           const SizedBox(height: 32),
 
@@ -203,30 +254,16 @@ class AboutAppScreen extends StatelessWidget {
             child: Column(
               children: [
                 _buildInfoRow(
-                  icon: Icons.code_rounded,
-                  label: 'Phát triển bởi',
-                  value: 'Your Company',
+                  icon: Icons.school_rounded,
+                  label: 'Phát triển cho',
+                  value: 'Trường Đại học Võ Trường Toản (VTTU)',
                   isDark: isDark,
                 ),
                 const SizedBox(height: 16),
                 _buildInfoRow(
-                  icon: Icons.email_rounded,
-                  label: 'Email',
-                  value: 'support@yourapp.com',
-                  isDark: isDark,
-                ),
-                const SizedBox(height: 16),
-                _buildInfoRow(
-                  icon: Icons.language_rounded,
-                  label: 'Website',
-                  value: 'www.yourapp.com',
-                  isDark: isDark,
-                ),
-                const SizedBox(height: 16),
-                _buildInfoRow(
-                  icon: Icons.calendar_today_rounded,
-                  label: 'Phát hành',
-                  value: 'Tháng 12, 2024',
+                  icon: Icons.verified_user_rounded,
+                  label: 'Trạng thái phiên bản',
+                  value: 'Chính thức',
                   isDark: isDark,
                 ),
               ],
@@ -237,7 +274,7 @@ class AboutAppScreen extends StatelessWidget {
           // Copyright
           Center(
             child: Text(
-              '© 2024 Your Company. All rights reserved.',
+              '© 2026 UTE / VTTU. All rights reserved.',
               style: TextStyle(
                 fontSize: 12,
                 color: isDark ? Colors.grey[600] : Colors.grey[500],
@@ -312,33 +349,6 @@ class AboutAppScreen extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNoteItem(String text, bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            Icons.check_circle_rounded,
-            size: 18,
-            color: isDark ? Colors.amber[300] : Colors.amber[700],
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: 14,
-                color: isDark ? Colors.amber[200] : Colors.amber[900],
-                height: 1.5,
-              ),
             ),
           ),
         ],

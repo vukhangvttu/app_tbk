@@ -57,7 +57,8 @@
     "time": "Time",
     "school_day": "School day",
     "number_of_periods" : "Number of periods",
-    "periods": "periods"
+    "periods": "periods",
+    "break_time" : "Break time"
   },
   "notification": {
     "title": "Notifications",
@@ -104,7 +105,19 @@
     "logout": "Logout",
     "logout_subtitle": "Sign out of account",
     "logout_confirm": "Are you sure you want to logout?",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "device": "Devices",
+    "device_subtitle": "Manage signed-in devices",
+    "face_id": "Face ID",
+    "face_id_subtitle": "Set up face recognition",
+    "male": "Male",
+    "female": "Female",
+    "theme_changed": "Switched to {mode}",
+    "logout_title": "Log out", ,
+    "load_error_title": "Couldn't load data",
+    "load_error_default": "Failed to load your profile",
+    "retry": "Retry"
+
   },
   "theme": {
     "title": "Choose theme",
@@ -196,5 +209,21 @@
     "info_title": "How it works",
     "info_content": "• Class schedule: Get daily notifications at the chosen time\\n• Exam schedule: Receive reminders earlier for preparation\\n• Reminder before class: Extra alert before class starts\\n• Reminder before exam: Notify X days before exam",
     "test_sent": "✅ Test notification will appear after 10 seconds"
+  },
+  "absence_warning": {
+    "title": "Attendance Warning",
+    "good_status": "Good attendance. No subjects exceed the absence threshold.",
+    "banned": "Exam Banned",
+    "warning": "Warning",
+    "absent_info": "Absent {absentPeriods}/{allowedPeriods} allowed periods",
+    "context_info": "Progress: {pastSessions}/{totalSessions} sessions • Total {totalPeriods} periods",
+    "reload": "Reload",
+    "banned_msg": "Risk of exam ban!",
+    "warning_msg": "Attendance Warning",
+    "banned_body": "Warning: You have missed {absentPeriods} periods for {subject}, exceeding the limit. Risk of exam ban.",
+    "warning_body": "Attention: You have missed {absentPeriods} periods for {subject}. Approaching exam ban limit!",
+    "load_failed": "Couldn't load warning data",
+    "retry": "Retry"
+
   }
 }

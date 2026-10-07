@@ -104,7 +104,7 @@ class SmartNotificationService {
   Future<AppNotificationSettings> getSettings({String mssv = '7231620971'}) async {
     try {
       final response = await http.get(
-        Uri.parse('http://192.168.0.9:8080/notification-service/api/users/get-settings/$mssv'),
+        Uri.parse('/notification-service/api/users/get-settings/$mssv'),
         headers: {'Content-Type': 'application/json'},
       ).timeout(const Duration(seconds: 15));
 

@@ -1,135 +1,101 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:app_tbk/config/api_constants.dart';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:http/http.dart' as http;
 
 class HttpClientWrapper {
-  // static const baseUrl = 'http://113.164.79.241:8202/api/thoi-khoa-bieu';
   static const Duration timeout = Duration(seconds: 15);
 
-  // GET request với token
+  // GET request với token & tự động refresh token
   static Future<http.Response> get(
-      String endpoint, {
-        Map<String, String>? queryParams,
-      }) async {
-    if (!await AuthService.hasInternetConnection()) {
-      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
+    String endpoint, {
+    Map<String, String>? queryParams,
+  }) async {
+    String formattedEndpoint = endpoint.startsWith('/') ? endpoint : '/$endpoint';
+    if (queryParams != null && queryParams.isNotEmpty) {
+      final uri = Uri(queryParameters: queryParams);
+      formattedEndpoint += '?${uri.query}';
     }
-
-    final token = await AuthService.getToken();
-    if (token == null) {
-      throw UnauthorizedException('Token không tồn tại');
-    }
-
-    final uri = Uri.parse(ApiConstants.baseUrl).replace(
-      queryParameters: queryParams,
-    );
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token',
-    };
 
     try {
-      final response = await http.get(uri, headers: headers).timeout(timeout);
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'GET',
+        endpoint: formattedEndpoint,
+      );
+
+      if (response == null) {
+        throw UnauthorizedException('Phiên đăng nhập hết hạn hoặc không kết nối được máy chủ');
+      }
+
       return _handleResponse(response);
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  // POST request với token
+  // POST request với token & tự động refresh token
   static Future<http.Response> post(
-      String endpoint, {
-        Map<String, dynamic>? body,
-      }) async {
-    if (!await AuthService.hasInternetConnection()) {
-      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
-    }
-
-    final token = await AuthService.getToken();
-    if (token == null) {
-      throw UnauthorizedException('Token không tồn tại');
-    }
-
-    final uri = Uri.parse(ApiConstants.baseUrl);
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token',
-    };
+    String endpoint, {
+    Map<String, dynamic>? body,
+  }) async {
+    String formattedEndpoint = endpoint.startsWith('/') ? endpoint : '/$endpoint';
 
     try {
-      final response = await http
-          .post(
-        uri,
-        headers: headers,
-        body: body != null ? jsonEncode(body) : null,
-      )
-          .timeout(timeout);
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'POST',
+        endpoint: formattedEndpoint,
+        body: body,
+      );
+
+      if (response == null) {
+        throw UnauthorizedException('Phiên đăng nhập hết hạn hoặc không kết nối được máy chủ');
+      }
+
       return _handleResponse(response);
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  // PUT request với token
+  // PUT request với token & tự động refresh token
   static Future<http.Response> put(
-      String endpoint, {
-        Map<String, dynamic>? body,
-      }) async {
-    if (!await AuthService.hasInternetConnection()) {
-      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
-    }
-
-    final token = await AuthService.getToken();
-    if (token == null) {
-      throw UnauthorizedException('Token không tồn tại');
-    }
-
-    final uri = Uri.parse(ApiConstants.baseUrl);
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token',
-    };
+    String endpoint, {
+    Map<String, dynamic>? body,
+  }) async {
+    String formattedEndpoint = endpoint.startsWith('/') ? endpoint : '/$endpoint';
 
     try {
-      final response = await http
-          .put(
-        uri,
-        headers: headers,
-        body: body != null ? jsonEncode(body) : null,
-      )
-          .timeout(timeout);
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'PUT',
+        endpoint: formattedEndpoint,
+        body: body,
+      );
+
+      if (response == null) {
+        throw UnauthorizedException('Phiên đăng nhập hết hạn hoặc không kết nối được máy chủ');
+      }
+
       return _handleResponse(response);
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  // DELETE request với token
+  // DELETE request với token & tự động refresh token
   static Future<http.Response> delete(String endpoint) async {
-    if (!await AuthService.hasInternetConnection()) {
-      throw NoInternetException('Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.');
-    }
-
-    final token = await AuthService.getToken();
-    if (token == null) {
-      throw UnauthorizedException('Token không tồn tại');
-    }
-
-    final uri = Uri.parse(ApiConstants.baseUrl);
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token',
-    };
+    String formattedEndpoint = endpoint.startsWith('/') ? endpoint : '/$endpoint';
 
     try {
-      final response = await http.delete(uri, headers: headers).timeout(timeout);
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'DELETE',
+        endpoint: formattedEndpoint,
+      );
+
+      if (response == null) {
+        throw UnauthorizedException('Phiên đăng nhập hết hạn hoặc không kết nối được máy chủ');
+      }
+
       return _handleResponse(response);
     } catch (e) {
       throw _handleError(e);
@@ -138,11 +104,6 @@ class HttpClientWrapper {
 
   // Xử lý response
   static http.Response _handleResponse(http.Response response) {
-    if (response.statusCode == 401) {
-      AuthService.logout();
-      throw UnauthorizedException('Phiên đăng nhập hết hạn');
-    }
-
     if (response.statusCode >= 400) {
       throw ApiException(
         'Lỗi ${response.statusCode}',
@@ -156,13 +117,7 @@ class HttpClientWrapper {
 
   // Xử lý lỗi
   static Exception _handleError(dynamic error) {
-    if (error is NoInternetException) {
-      return error;
-    }
-    if (error is UnauthorizedException) {
-      return error;
-    }
-    if (error is ApiException) {
+    if (error is NoInternetException || error is UnauthorizedException || error is ApiException) {
       return error;
     }
     if (error is SocketException || error is http.ClientException) {
@@ -200,131 +155,96 @@ class ApiException implements Exception {
 }
 
 class ApiService {
-
-  // Lấy headers với token
-   static Future<Map<String, String>> _getHeaders() async {
-    final token = await AuthService.getToken();
-    if (token == null || token.isEmpty) {
-      throw Exception('Không tìm thấy token. Vui lòng đăng nhập lại.');
-    }
-
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token', // Hoặc 'Token $token' tùy vào API
-    };
-  }
-
-  // Xử lý lỗi 401 - Token hết hạn
-  static void _handleUnauthorized() {
-    // Xóa token cũ và yêu cầu đăng nhập lại
-    AuthService.logout();
-    throw Exception('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
-  }
-
-   /// Lấy thời khóa biểu - Tự động refresh token khi hết hạn
-   static Future<List<dynamic>> getThoiKhoaBieu({
-     required String idSinhVien,
-     required int hocKy,
-     required String namHoc,
-   }) async {
-     try {
-       final response = await AuthService.authenticatedRequestLichSinhVien(
-         method: 'POST',
-         endpoint: '/thoi-khoa-bieu',
-         body: {
-           'id_sinh_vien': idSinhVien,
-           'hoc_ky': hocKy,
-           'nam_hoc': namHoc,
-         }
-       );
-
-       if (response?.statusCode == 200) {
-         final data = jsonDecode(response!.body);
-
-         if (data['success'] == true) {
-           return data['data'] ?? [];
-         } else {
-           throw Exception('Lỗi: ${data['error'] ?? 'Unknown error'}');
-         }
-       } else {
-         throw Exception('Lỗi server: ${response?.statusCode}');
-       }
-     } catch (e) {
-       print('❌ Lỗi lấy thời khóa biểu: $e');
-       rethrow;
-     }
-   }
-
-  static Future<List<dynamic>> getSchedule(
-      int idSinhVien,
-      int hocKy,
-      String namHoc
-      ) async {
+  /// Lấy thời khóa biểu - Tự động refresh token khi hết hạn
+  static Future<List<dynamic>> getThoiKhoaBieu({
+    required String idSinhVien,
+    required int hocKy,
+    required String namHoc,
+  }) async {
     try {
-      final headers = await _getHeaders();
-      final url = Uri.parse(
-          '${ApiConstants.baseUrl}/lich-hoc-lich-thi?idSinhVien=$idSinhVien&hocKy=$hocKy&namHoc=$namHoc'
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'POST',
+        endpoint: '/thoi-khoa-bieu',
+        body: {
+          'id_sinh_vien': idSinhVien,
+          'hoc_ky': hocKy,
+          'nam_hoc': namHoc,
+        },
       );
 
-      final response = await http.get(url, headers: headers);
+      if (response != null && response.statusCode == 200) {
+        final data = jsonDecode(response.body);
 
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
-      } else if (response.statusCode == 401) {
-        _handleUnauthorized();
-        return [];
+        if (data['success'] == true) {
+          return data['data'] ?? [];
+        } else {
+          throw Exception('Lỗi: ${data['error'] ?? 'Unknown error'}');
+        }
       } else {
-        throw Exception('Lỗi ${response.statusCode}: ${response.body}');
+        throw Exception('Lỗi server: ${response?.statusCode}');
       }
     } catch (e) {
-      if (e.toString().contains('Không tìm thấy token') ||
-          e.toString().contains('hết hạn')) {
+      print('❌ Lỗi lấy thời khóa biểu: $e');
+      rethrow;
+    }
+  }
+
+  /// Lấy lịch học & lịch thi - Tự động refresh token khi hết hạn
+  static Future<List<dynamic>> getSchedule(
+    int idSinhVien,
+    int hocKy,
+    String namHoc,
+  ) async {
+    try {
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'GET',
+        endpoint: '/lich-hoc-lich-thi?idSinhVien=$idSinhVien&hocKy=$hocKy&namHoc=$namHoc',
+      );
+
+      if (response != null && response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        throw Exception('Lỗi ${response?.statusCode}: ${response?.body}');
+      }
+    } catch (e) {
+      if (e.toString().contains('Không tìm thấy token') || e.toString().contains('hết hạn')) {
         rethrow;
       }
       throw Exception('Không tải được lịch học: $e');
     }
   }
 
-  // Ví dụ các method khác cũng sử dụng token
+  /// Lấy thông tin sinh viên - Tự động refresh token khi hết hạn
   static Future<Map<String, dynamic>> getUserInfo(int idSinhVien) async {
     try {
-      final headers = await _getHeaders();
-      final url = Uri.parse('${ApiConstants.baseUrl}/sinh-vien/$idSinhVien');
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'GET',
+        endpoint: '/sinh-vien/$idSinhVien',
+      );
 
-      final response = await http.get(url, headers: headers);
-
-      if (response.statusCode == 200) {
+      if (response != null && response.statusCode == 200) {
         return json.decode(response.body);
-      } else if (response.statusCode == 401) {
-        _handleUnauthorized();
-        return {};
       } else {
-        throw Exception('Lỗi ${response.statusCode}: ${response.body}');
+        throw Exception('Lỗi ${response?.statusCode}: ${response?.body}');
       }
     } catch (e) {
       throw Exception('Không tải được thông tin sinh viên: $e');
     }
   }
 
-  // Method POST với token
+  /// Cập nhật lịch học - Tự động refresh token khi hết hạn
   static Future<bool> updateSchedule(Map<String, dynamic> data) async {
     try {
-      final headers = await _getHeaders();
-      final url = Uri.parse('${ApiConstants.baseUrl}/cap-nhat');
-
-      final response = await http.post(
-        url,
-        headers: headers,
-        body: jsonEncode(data),
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'POST',
+        endpoint: '/cap-nhat',
+        body: data,
       );
 
-      if (response.statusCode == 200) {
+      if (response != null && response.statusCode == 200) {
         return true;
-      } else if (response.statusCode == 401) {
-        _handleUnauthorized();
-        return false;
       } else {
-        throw Exception('Lỗi ${response.statusCode}: ${response.body}');
+        throw Exception('Lỗi ${response?.statusCode}: ${response?.body}');
       }
     } catch (e) {
       throw Exception('Không cập nhật được lịch học: $e');

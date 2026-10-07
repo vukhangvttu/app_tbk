@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.1+2
+version: 1.0.2
 
 environment:
   sdk: ^3.7.2
@@ -48,6 +48,7 @@ dependencies:
 #  path: ^1.9.0
   device_info_plus: ^10.1.0
   package_info_plus: ^8.0.0
+  url_launcher: ^6.3.0
 
   # Để chọn ảnh từ gallery/camera
   image_picker: ^1.1.1
@@ -65,7 +66,8 @@ dependencies:
   camera: ^0.10.5+5
 
   # Location
-  geolocator: ^10.1.0
+  geolocator: ^13.0.0
+  google_maps_flutter: ^2.9.0
   permission_handler: ^11.0.1
 
   # Face detection
@@ -89,6 +91,7 @@ dependencies:
   path_provider: ^2.1.0
   path: ^1.9.0
   location: ^6.0.2
+  open_filex: ^4.3.2
 
   auto_size_text: ^3.0.0
 
@@ -99,6 +102,7 @@ dependencies:
   badges: ^3.1.2
   flutter_launcher_icons: ^0.14.1
   google_sign_in: ^6.2.1
+  shimmer: ^3.0.0
 
 flutter:
   assets:

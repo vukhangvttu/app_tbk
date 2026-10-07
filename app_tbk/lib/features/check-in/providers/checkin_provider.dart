@@ -20,17 +20,27 @@ class CheckInProvider with ChangeNotifier {
   CheckInEvent? get selectedEvent => _selectedEvent;
 
   // Tạo sự kiện test
-  void createTestEvent() {
+  void createTestEvent({
+    bool useRectangle = true,
+    double radiusMeters = 100, // Dùng cho hình tròn
+    double widthMeters = 200, // Dùng cho hình chữ nhật
+    double heightMeters = 100, // Dùng cho hình chữ nhật
+    double rotationDeg = 30, // Góc xoay hình chữ nhật
+  }) {
     final now = DateTime.now();
     final testEvent = CheckInEvent(
       id: 'test-001',
       name: 'Sự kiện Check-in Test',
       date: now,
-      checkInStartTime: now.add(const Duration(seconds: 5)), // Đếm ngược 5 giây
+      checkInStartTime: now.add(const Duration(seconds: 30)), // Đếm ngược 5 giây
       checkInEndTime: now.add(const Duration(hours: 2)),
-      location: 'Văn phòng công ty',
-      latitude: 10.762622, // Tọa độ mẫu - Sài Gòn
-      longitude: 106.660172,
+      location: 'Trường Đại Học Võ Trường Toản',
+      latitude: 9.959298488110594, // Tọa độ mẫu
+      longitude: 105.7372332911886,
+      radiusMeters: radiusMeters,
+      widthMeters: useRectangle ? widthMeters : null,
+      heightMeters: useRectangle ? heightMeters : null,
+      rotationDeg: rotationDeg,
       isCheckedIn: false,
     );
 
@@ -49,13 +59,11 @@ class CheckInProvider with ChangeNotifier {
       // Trong môi trường thực tế, uncomment dòng này
       // _events = await _apiService.getEvents();
 
-      // Test mode: tạo sự kiện test
-      createTestEvent();
-
-      _isLoading = false;
-      notifyListeners();
+      // Test mode: tạo sự kiện test. Đổi useRectangle = false để xài hình tròn
+      createTestEvent(useRectangle: true);
     } catch (e) {
       _error = 'Không thể tải sự kiện: $e';
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
@@ -72,7 +80,8 @@ class CheckInProvider with ChangeNotifier {
     return await _permissionService.requestAllPermissions();
   }
 
-  // Lấy vị trí hiện tại
+  // Lấy vị trí hiện tại (giữ lại cho tương thích; CheckInScreen giờ tự lấy
+  // qua Geolocator để đi qua cùng bộ lọc 3 lớp)
   Future<Map<String, dynamic>> getCurrentLocation() async {
     try {
       final position = await _locationService.getCurrentLocation();
@@ -87,7 +96,8 @@ class CheckInProvider with ChangeNotifier {
       if (!_locationService.isLocationAccurate(position)) {
         return {
           'success': false,
-          'message': 'Vị trí không chính xác (độ chính xác: ${position.accuracy.toStringAsFixed(1)}m)',
+          'message':
+          'Vị trí không chính xác (độ chính xác: ${position.accuracy.toStringAsFixed(1)}m)',
         };
       }
 
@@ -110,27 +120,37 @@ class CheckInProvider with ChangeNotifier {
     return await _apiService.submitCheckIn(data);
   }
 
-  // Đánh dấu đã check-in
+  // Đánh dấu đã check-in.
+  // FIX: bản cũ dựng lại CheckInEvent mà làm rơi radiusMeters/widthMeters/
+  // heightMeters/rotationDeg → hasGeofence tính lại sai, cụm bản đồ + banner
+  // vùng biến mất ngay sau khi check-in thành công. Bản này giữ nguyên mọi
+  // field, chỉ lật isCheckedIn.
+  // (Nếu CheckInEvent có copyWith thì thay toàn bộ bằng old.copyWith(isCheckedIn: true))
   void markAsCheckedIn(String eventId) {
     final index = _events.indexWhere((e) => e.id == eventId);
-    if (index != -1) {
-      _events[index] = CheckInEvent(
-        id: _events[index].id,
-        name: _events[index].name,
-        date: _events[index].date,
-        checkInStartTime: _events[index].checkInStartTime,
-        checkInEndTime: _events[index].checkInEndTime,
-        location: _events[index].location,
-        latitude: _events[index].latitude,
-        longitude: _events[index].longitude,
-        isCheckedIn: true,
-      );
+    if (index == -1) return;
 
-      if (_selectedEvent?.id == eventId) {
-        _selectedEvent = _events[index];
-      }
+    final old = _events[index];
+    _events[index] = CheckInEvent(
+      id: old.id,
+      name: old.name,
+      date: old.date,
+      checkInStartTime: old.checkInStartTime,
+      checkInEndTime: old.checkInEndTime,
+      location: old.location,
+      latitude: old.latitude,
+      longitude: old.longitude,
+      radiusMeters: old.radiusMeters,
+      widthMeters: old.widthMeters,
+      heightMeters: old.heightMeters,
+      rotationDeg: old.rotationDeg,
+      isCheckedIn: true,
+    );
 
-      notifyListeners();
+    if (_selectedEvent?.id == eventId) {
+      _selectedEvent = _events[index];
     }
+
+    notifyListeners();
   }
 }

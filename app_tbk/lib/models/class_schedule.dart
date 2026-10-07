@@ -17,6 +17,7 @@ class LopHoc {
   final DateTime ngayKt;
   final Color mauSac;
   final bool nhomThi;
+  final String thoiGianGiaiLao;
 
   LopHoc({
     required this.tenMon,
@@ -32,7 +33,39 @@ class LopHoc {
     required this.ngayKt,
     Color? mauSac,
     required this.nhomThi,
+    required this.thoiGianGiaiLao
   }) : mauSac = mauSac ?? _layMauSacChoMonHoc(tenMon);
+
+  factory LopHoc.fromJson(Map<String, dynamic> json) {
+    return LopHoc(
+      tenMon: json['TENMON'] ?? '',
+      thu: json['THU'] ?? 2,
+      gioBd: json['GIOBD'] ?? '',
+      gioKt: json['GIOKT'] ?? '',
+      hoTen: json['HOTEN'] ?? '',
+      tenPhong: json['TENPHONG'] ?? '',
+      maNhom: json['manhom'] ?? 0,
+      soTiet: json['SOTIET'] ?? 0,
+      phanBo: json['PHANBO'] ?? '',
+      ngayBd: _phanTichNgay(json['NGAYBD']),
+      ngayKt: _phanTichNgay(json['NGAYKT']),
+      nhomThi: json['NHOMTHI'] ?? false,
+      thoiGianGiaiLao: json['THOIGIAN_GIAILAO'] ?? '',
+    );
+  }
+
+  static DateTime _phanTichNgay(String? ngayStr) {
+    if (ngayStr == null || ngayStr.isEmpty) {
+      return DateTime.now();
+    }
+    try {
+      final utcDate = DateTime.parse(ngayStr);
+      final localDate = utcDate.toLocal();
+      return DateTime(localDate.year, localDate.month, localDate.day);
+    } catch (e) {
+      return DateTime.now();
+    }
+  }
 
   static Color _layMauSacChoMonHoc(String monHoc) {
     final mauSacList = [

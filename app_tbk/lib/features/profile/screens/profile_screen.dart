@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:io';
 
 import 'package:app_tbk/features/notification-setting/screens/notification_screen.dart';
 import 'package:app_tbk/features/profile/models/profile.dart' as model;
@@ -9,14 +9,11 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:app_tbk/features/auth/screens/login_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get_core/src/get_main.dart';
-import 'package:local_auth/local_auth.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:app_tbk/screens/notifications_settings_screen.dart';
-import 'package:get/get.dart' hide Trans;
 import '../../../config/api_constants.dart';
-import '../../auth/controllers/login_controller.dart';
 import '../../auth/services/auth_service.dart';
 import 'about_screen.dart';
 import 'change_password_screen.dart';
@@ -40,49 +37,21 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => ProfileScreenState();
 }
 
-class ProfileScreenState extends State<ProfileScreen>
-    with SingleTickerProviderStateMixin {
-  final LocalAuthentication _localAuth = LocalAuthentication();
+class ProfileScreenState extends State<ProfileScreen> {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
-  bool _biometricEnabled = false;
-  bool _canCheckBiometrics = false;
-  List<BiometricType> _availableBiometrics = [];
-  String _biometricType = '';
   String _userId = '';
 
   // Thêm timestamp để force reload avatar
   int _avatarTimestamp = DateTime.now().millisecondsSinceEpoch;
 
-  final Map<int, bool> _tabLoading = {0: false, 1: false, 2: false, 3: false};
-  final Map<int, bool> _tabLoaded = {0: false, 1: false, 2: false, 3: false};
-
-  late TabController _tabController;
-
   bool _isLoading = true;
   bool _hasError = false;
   String _errorMessage = '';
+  bool _daTaiThanhCong = false;
 
   late Future<Map<String, String>> _authHeadersFuture;
 
   ThemeMode _themeMode = ThemeMode.system;
-
-  final LoginController _authController = Get.put(LoginController());
-
-  @override
-  void initState() {
-    super.initState();
-    _authHeadersFuture = ProfileService.getAuthHeaders();
-
-    _tabController = TabController(length: 4, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        loadTab(_tabController.index);
-      }
-    });
-
-    // _checkBiometricSupport();
-    _loadBiometricSetting();
-  }
 
   model.UserProfile _profile = model.UserProfile(
     id: '',
@@ -99,74 +68,25 @@ class ProfileScreenState extends State<ProfileScreen>
     avatarUrl: null,
   );
 
-  void loadTab(int tabIndex) {
-    if (!mounted || _tabLoaded[tabIndex] == true) return;
-
-    setState(() {
-      _isLoading = true;
-    });
-
-    _loadDataForTab(tabIndex).then((_) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    });
+  @override
+  void initState() {
+    super.initState();
+    _themeMode = widget.currentThemeMode ?? ThemeMode.system;
+    _authHeadersFuture = ProfileService.getAuthHeaders();
+    // FIX QUAN TRỌNG: bản cũ không gọi hàm load ở đây → màn hình treo skeleton mãi
+    _loadProfile();
   }
 
-  Future<void> _loadDataForTab(int tabIndex) async {
-    if (_tabLoading[tabIndex] == true) return;
-
-    setState(() {
-      _tabLoading[tabIndex] = true;
-      _isLoading = true;
-      _hasError = false;
-    });
-
-    try {
-      final profile = await ProfileService.fetchProfile(context);
-
-
-      if (mounted && profile != null) {
-
-        final userId = await AuthService.getUserId() ?? '';
-
-        setState(() {
-          _profile = profile;
-          _isLoading = false;
-          _hasError = false;
-          _tabLoading[tabIndex] = false;
-          _tabLoaded[tabIndex] = true;
-          _userId = userId;
-
-        });
-      } else {
-        setState(() {
-          _isLoading = false;
-          _hasError = true;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasError = true;
-          _errorMessage = e.toString();
-        });
-
-      }
+  /// Được MainScreen gọi qua GlobalKey khi tab Cá nhân được chọn.
+  /// Tải profile nếu chưa có dữ liệu; đã tải rồi thì bỏ qua để khỏi nhấp nháy.
+  void loadTab(int tabIndex) {
+    if (!_daTaiThanhCong && mounted) {
+      _loadProfile();
     }
   }
 
-  @override
-  void dispose() {
-    _tabController.animation?.removeListener(() {});
-    _tabController.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadProfile() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _hasError = false;
@@ -176,13 +96,18 @@ class ProfileScreenState extends State<ProfileScreen>
     try {
       final profile = await ProfileService.fetchProfile(context);
 
-      print(profile?.avatarUrl);
+      debugPrint('avatarUrl: ${profile?.avatarUrl}');
 
-      if (mounted && profile != null) {
+      if (!mounted) return;
+      if (profile != null) {
+        final userId = await AuthService.getUserId() ?? '';
+        if (!mounted) return;
         setState(() {
           _profile = profile;
+          _userId = userId;
           _isLoading = false;
           _hasError = false;
+          _daTaiThanhCong = true;
           // Update timestamp để force reload avatar
           _avatarTimestamp = DateTime.now().millisecondsSinceEpoch;
           _authHeadersFuture = ProfileService.getAuthHeaders();
@@ -191,25 +116,25 @@ class ProfileScreenState extends State<ProfileScreen>
         setState(() {
           _isLoading = false;
           _hasError = true;
-          _errorMessage = 'Không thể tải thông tin profile';
+          _daTaiThanhCong = false;
+          _errorMessage = 'profile.load_error_default'.tr();
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasError = true;
-          _errorMessage = e.toString();
-        });
-
-      }
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _hasError = true;
+        _daTaiThanhCong = false;
+        _errorMessage = e.toString();
+      });
     }
   }
 
   // Phóng to ảnh toàn màn hình
   void _showFullScreenImage(BuildContext context) {
     final String avatarEndpoint =
-        '${ApiConstants.baseUrl}/upload/avatar/original-url/${_userId}?t=$_avatarTimestamp';
+        '${ApiConstants.baseUrl}/upload/avatar/original-url/$_userId?t=$_avatarTimestamp';
 
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -242,19 +167,20 @@ class ProfileScreenState extends State<ProfileScreen>
                     child: SizedBox(
                       width: constraints.maxWidth,
                       height: constraints.maxHeight,
-                      child: Image.network(
-                        avatarEndpoint,
-                        headers: snapshot.data,
+                      child: CachedNetworkImage(
+                        imageUrl: avatarEndpoint,
+                        httpHeaders: snapshot.data,
                         fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Center(
-                            child: Icon(
-                              Icons.person_rounded,
-                              size: 100,
-                              color: Colors.white,
-                            ),
-                          );
-                        },
+                        placeholder: (context, url) => const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        ),
+                        errorWidget: (context, url, error) => const Center(
+                          child: Icon(
+                            Icons.person_rounded,
+                            size: 100,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     ),
                   );
@@ -266,323 +192,12 @@ class ProfileScreenState extends State<ProfileScreen>
       ),
     );
   }
-  // Các phương thức biometric (giữ nguyên)
-  Future<void> _checkBiometricSupport() async {
-    // Tùy chọn: kiểm tra ngay từ đầu (nếu widget đã chết thì bỏ qua luôn)
-    if (!mounted) return;
-
-    try {
-      // Các await có thể mất thời gian → người dùng có thể thoát màn hình trong lúc này
-      bool canCheckBiometrics = await _localAuth.canCheckBiometrics;
-      bool isDeviceSupported = await _localAuth.isDeviceSupported();
-      List<BiometricType> availableBiometrics =
-      await _localAuth.getAvailableBiometrics();
-
-      // 🔴 QUAN TRỌNG: Luôn kiểm tra mounted trước khi setState sau await
-      if (!mounted) return;
-
-      setState(() {
-        _canCheckBiometrics = canCheckBiometrics && isDeviceSupported;
-        _availableBiometrics = availableBiometrics;
-
-        if (availableBiometrics.contains(BiometricType.face)) {
-          _biometricType = 'Face ID';
-        } else if (availableBiometrics.contains(BiometricType.fingerprint)) {
-          _biometricType = 'Vân tay';
-        } else if (availableBiometrics.contains(BiometricType.iris)) {
-          _biometricType = 'Mống mắt';
-        } else {
-          _biometricType = 'Sinh trắc học';
-        }
-      });
-
-      print('🔍 Biometric Support Check:');
-      print('  - canCheckBiometrics: $canCheckBiometrics');
-      print('  - isDeviceSupported: $isDeviceSupported');
-      print('  - Available types: $availableBiometrics');
-
-    } catch (e) {
-      print('❌ Lỗi kiểm tra sinh trắc học: $e');
-
-      // Cũng kiểm tra mounted trước setState trong catch
-      if (!mounted) return;
-
-      setState(() {
-        _canCheckBiometrics = false;
-        _availableBiometrics = [];
-        _biometricType = 'Sinh trắc học';
-      });
-    }
-  }
-
-  Future<void> _loadBiometricSetting() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _biometricEnabled = prefs.getBool('biometric_enabled') ?? false;
-    });
-  }
-
-  Future<void> _saveBiometricSetting(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('biometric_enabled', enabled);
-  }
-
-  Future<bool> _authenticateWithBiometrics() async {
-    try {
-      bool authenticated = await _localAuth.authenticate(
-        localizedReason: 'Xác thực để bật/tắt đăng nhập bằng $_biometricType',
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-        ),
-      );
-      return authenticated;
-    } on PlatformException catch (e) {
-      print('Lỗi xác thực: $e');
-      _showErrorDialog('Lỗi xác thực: ${e.message}');
-      return false;
-    }
-  }
-
-  Future<bool> _showPasswordDialog(isBiometricEnabled) async {
-    final TextEditingController passwordController = TextEditingController();
-    String? errorMessage;
-    final prefs = await SharedPreferences.getInstance();
-
-    bool? result = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('Xác thực mật khẩu'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: 'Mật khẩu',
-                  errorText: errorMessage,
-                  errorMaxLines: 3,
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Hủy'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final username = await AuthService.getSavedMssv();
-                if (username == null || username.isEmpty) {
-                  throw Exception('Không tìm thấy thông tin sinh viên');
-                }
-
-                String password = passwordController.text;
-
-                setState(() {
-                  errorMessage = null;
-                });
-
-                try {
-                  bool isValid;
-                  if (isBiometricEnabled) {
-                    isValid = await _authController.loginWithBiometric(
-                        username, password);
-                  } else {
-                    isValid = await _authController.login(username, password);
-                  }
-
-                  if (isValid) {
-                    await prefs.setBool('biometric_enabled', true);
-                    print('Lưu biometric_enabled: true');
-                    Navigator.pop(context, true);
-                  } else {
-                    setState(() {
-                      errorMessage = 'Mật khẩu không đúng';
-                    });
-                  }
-                } catch (e) {
-                  print('Lỗi trong _showPasswordDialog: $e');
-                  String message = 'Lỗi không xác định';
-                  try {
-                    final errorStr = e.toString();
-                    final jsonStart = errorStr.indexOf('{');
-                    if (jsonStart != -1) {
-                      final jsonStr = errorStr.substring(jsonStart);
-                      final errorJson =
-                      jsonDecode(jsonStr) as Map<String, dynamic>;
-                      final errorCode = errorJson['code'] as int?;
-                      final errorMsg = errorJson['message'] as String?;
-
-                      switch (errorCode) {
-                        case 1003:
-                          message =
-                          'Xác thực thất bại: Người dùng chưa được xác thực';
-                          break;
-                        case 1004:
-                          message = 'Mật khẩu không hợp lệ';
-                          break;
-                        case 1005:
-                          message = 'Tài khoản bị khóa';
-                          break;
-                        default:
-                          message = errorMsg ?? 'Lỗi không xác định';
-                      }
-                    } else {
-                      message = 'Lỗi server không xác định';
-                    }
-                  } catch (parseError) {
-                    print('Lỗi parse JSON: $parseError');
-                    message = 'Lỗi: $e';
-                  }
-
-                  setState(() {
-                    errorMessage = message;
-                  });
-                }
-              },
-              child: const Text('Xác nhận'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return result ?? false;
-  }
-
-  Future<void> _toggleBiometric(bool value) async {
-    if (!_canCheckBiometrics || _availableBiometrics.isEmpty) {
-      _showBiometricSetupDialog();
-      return;
-    }
-
-    if (value) {
-      bool passwordVerified = await _showPasswordDialog(value);
-      if (!passwordVerified) return;
-
-      bool authenticated = await _authenticateWithBiometrics();
-      if (authenticated) {
-        await _saveBiometricSetting(true);
-
-        setState(() {
-          _biometricEnabled = true;
-        });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.white),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: Text('Đã bật đăng nhập bằng $_biometricType')),
-                ],
-              ),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-          );
-        }
-      }
-    } else {
-      bool authenticated = await _authenticateWithBiometrics();
-      if (authenticated) {
-        await _saveBiometricSetting(false);
-
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('biometric_authenticated');
-
-        setState(() {
-          _biometricEnabled = false;
-        });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.cancel, color: Colors.white),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: Text('Đã tắt đăng nhập bằng $_biometricType')),
-                ],
-              ),
-              backgroundColor: Colors.orange,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-          );
-        }
-      }
-    }
-  }
-
-  void _showBiometricSetupDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: Icon(
-          Icons.fingerprint_outlined,
-          color: Colors.orange[400],
-          size: 64,
-        ),
-        title: const Text('Thiết lập sinh trắc học'),
-        content: const Text(
-          'Thiết bị của bạn chưa hỗ trợ hoặc chưa cài đặt sinh trắc học.\n\n'
-              '📱 Hướng dẫn:\n\n'
-              'Android:\n'
-              '1. Vào Cài đặt > Bảo mật\n'
-              '2. Chọn "Vân tay" hoặc "Face Unlock"\n'
-              '3. Đăng ký sinh trắc học\n'
-              '4. Quay lại app này\n\n'
-              'iOS:\n'
-              '1. Vào Cài đặt > Face ID & Passcode\n'
-              '2. Hoặc Touch ID & Passcode\n'
-              '3. Đăng ký sinh trắc học\n\n'
-              '⚠️ Lưu ý: Emulator không hỗ trợ sinh trắc học thực. Vui lòng test trên thiết bị thật.',
-          style: TextStyle(fontSize: 14, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Đã hiểu'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showErrorDialog(String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: Icon(
-          Icons.error_outline,
-          color: Colors.red[400],
-          size: 48,
-        ),
-        title: const Text('Thông báo'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Đóng'),
-          ),
-        ],
-      ),
-    );
-  }
 
   void _showThemeDialog() {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
         return AlertDialog(
           title: Text('theme.title'.tr()),
           contentPadding: const EdgeInsets.fromLTRB(0, 20, 0, 20),
@@ -592,18 +207,24 @@ class ProfileScreenState extends State<ProfileScreen>
               shrinkWrap: true,
               children: [
                 _buildThemeOption(
+                  dialogContext: dialogContext,
+                  messenger: messenger,
                   title: 'theme.system'.tr(),
                   subtitle: 'theme.system_subtitle'.tr(),
                   icon: Icons.brightness_auto,
                   mode: ThemeMode.system,
                 ),
                 _buildThemeOption(
+                  dialogContext: dialogContext,
+                  messenger: messenger,
                   title: 'theme.light'.tr(),
                   subtitle: 'theme.light_subtitle'.tr(),
                   icon: Icons.light_mode,
                   mode: ThemeMode.light,
                 ),
                 _buildThemeOption(
+                  dialogContext: dialogContext,
+                  messenger: messenger,
                   title: 'theme.dark'.tr(),
                   subtitle: 'theme.dark_subtitle'.tr(),
                   icon: Icons.dark_mode,
@@ -614,8 +235,8 @@ class ProfileScreenState extends State<ProfileScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Hủy'.tr()),
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text('profile.cancel'.tr()),
             ),
           ],
         );
@@ -624,6 +245,8 @@ class ProfileScreenState extends State<ProfileScreen>
   }
 
   Widget _buildThemeOption({
+    required BuildContext dialogContext,
+    required ScaffoldMessengerState messenger,
     required String title,
     required String subtitle,
     required IconData icon,
@@ -640,12 +263,15 @@ class ProfileScreenState extends State<ProfileScreen>
         if (value != null) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('themeMode', value.toString().split('.').last);
+          if (!mounted) return;
           setState(() => _themeMode = value);
           widget.onThemeChanged?.call(value);
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
+          Navigator.pop(dialogContext);
+          messenger.showSnackBar(
             SnackBar(
-              content: Text('Đã chuyển sang chế độ $title'),
+              content: Text(
+                'profile.theme_changed'.tr(namedArgs: {'mode': title}),
+              ),
               behavior: SnackBarBehavior.floating,
               duration: const Duration(seconds: 2),
             ),
@@ -695,23 +321,37 @@ class ProfileScreenState extends State<ProfileScreen>
       backgroundColor:
       isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       body: _isLoading
-          ? _buildTabSkeleton()
+          ? Shimmer.fromColors(
+        baseColor: isDark ? Colors.grey[800]! : Colors.grey[300]!,
+        highlightColor: isDark ? Colors.grey[700]! : Colors.grey[100]!,
+        child: _buildTabSkeleton(),
+      )
           : _hasError
-          ? _buildErrorView(isDark) // ✅ THAY: Chỉ 1 error view
+          ? _buildErrorView(isDark)
           : CustomScrollView(
         slivers: [
           _buildAppBar(theme, isDark),
           SliverToBoxAdapter(
             child: Column(
               children: [
-                _buildProfileHeader(theme, isDark),
-                _buildInfoSection(theme, isDark),
+                _AnimatedItem(
+                    index: 0,
+                    child: _buildProfileHeader(theme, isDark)),
+                _AnimatedItem(
+                    index: 1,
+                    child: _buildInfoSection(theme, isDark)),
                 const SizedBox(height: 16),
-                _buildSecuritySection(theme, isDark),
+                _AnimatedItem(
+                    index: 2,
+                    child: _buildSecuritySection(theme, isDark)),
                 const SizedBox(height: 16),
-                _buildSettingsSection(theme, isDark),
+                _AnimatedItem(
+                    index: 3,
+                    child: _buildSettingsSection(theme, isDark)),
                 const SizedBox(height: 16),
-                _buildActionsSection(theme, isDark),
+                _AnimatedItem(
+                    index: 4,
+                    child: _buildActionsSection(theme, isDark)),
                 const SizedBox(height: 32),
               ],
             ),
@@ -720,6 +360,7 @@ class ProfileScreenState extends State<ProfileScreen>
       ),
     );
   }
+
   Widget _buildAppBar(ThemeData theme, bool isDark) {
     return SliverAppBar(
       expandedHeight: 50,
@@ -747,9 +388,7 @@ class ProfileScreenState extends State<ProfileScreen>
             );
 
             if (result == true && mounted) {
-              setState(() {
-                _loadProfile();
-              });
+              _loadProfile();
             }
           },
         ),
@@ -758,10 +397,9 @@ class ProfileScreenState extends State<ProfileScreen>
   }
 
   Widget _buildProfileHeader(ThemeData theme, bool isDark) {
-    if (_profile.mssv.isEmpty) return _buildInitialAvatar(theme);
-
+    final hasAvatar = _profile.mssv.isNotEmpty && _userId.isNotEmpty;
     final String avatarEndpoint =
-        '${ApiConstants.baseUrl}/upload/avatar/thumb-url/${_userId}?t=$_avatarTimestamp';
+        '${ApiConstants.baseUrl}/upload/avatar/thumb-url/$_userId?t=$_avatarTimestamp';
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -769,7 +407,7 @@ class ProfileScreenState extends State<ProfileScreen>
         children: [
           // Avatar với GestureDetector để zoom
           GestureDetector(
-            onTap: () => _showFullScreenImage(context),
+            onTap: hasAvatar ? () => _showFullScreenImage(context) : null,
             child: Container(
               width: 100,
               height: 100,
@@ -790,9 +428,8 @@ class ProfileScreenState extends State<ProfileScreen>
                 ],
               ),
               child: ClipOval(
-                child: _profile.mssv.isEmpty
-                    ? _buildInitialAvatar(theme)
-                    : FutureBuilder<Map<String, String>>(
+                child: hasAvatar
+                    ? FutureBuilder<Map<String, String>>(
                   future: _authHeadersFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
@@ -800,38 +437,29 @@ class ProfileScreenState extends State<ProfileScreen>
                         child: SizedBox(
                           width: 30,
                           height: 30,
-                          child:
-                          CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                       );
                     }
 
-                    return Image.network(
-                      avatarEndpoint,
-                      headers: snapshot.data,
+                    return CachedNetworkImage(
+                      imageUrl: avatarEndpoint,
+                      httpHeaders: snapshot.data,
                       fit: BoxFit.cover,
-                      key: ValueKey(avatarEndpoint),
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return Center(
-                          child: CircularProgressIndicator(
-                            value: loadingProgress.expectedTotalBytes !=
-                                null
-                                ? loadingProgress.cumulativeBytesLoaded /
-                                loadingProgress.expectedTotalBytes!
-                                : null,
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        );
-                      },
-                      errorBuilder: (context, error, stackTrace) {
-                        print('Lỗi load avatar: $error');
+                      placeholder: (context, url) => const Center(
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      ),
+                      errorWidget: (context, url, error) {
+                        debugPrint('Lỗi load avatar: $error');
                         return _buildInitialAvatar(theme);
                       },
                     );
                   },
-                ),
+                )
+                    : _buildInitialAvatar(theme),
               ),
             ),
           ),
@@ -896,7 +524,9 @@ class ProfileScreenState extends State<ProfileScreen>
         _buildInfoTile(
           icon: Icons.wc_outlined,
           title: 'profile.gender'.tr(),
-          value: _profile.gioiTinh == 'male' ? 'Nam' : 'Nữ',
+          value: _profile.gioiTinh == 'male'
+              ? 'profile.male'.tr()
+              : 'profile.female'.tr(),
           isDark: isDark,
         ),
         _buildInfoTile(
@@ -908,7 +538,7 @@ class ProfileScreenState extends State<ProfileScreen>
         _buildInfoTile(
           icon: Icons.class_outlined,
           title: 'profile.class'.tr(),
-          value: _profile.lop + ' ' + _profile.khoaHoc,
+          value: '${_profile.lop} ${_profile.khoaHoc}',
           isDark: isDark,
         ),
       ],
@@ -916,70 +546,30 @@ class ProfileScreenState extends State<ProfileScreen>
   }
 
   Widget _buildSecuritySection(ThemeData theme, bool isDark) {
-    String typeKey;
-
-    switch (_biometricType) {
-      case 'fingerprint':
-        typeKey = "profile.biometric_type.fingerprint".tr();
-        break;
-      case 'face':
-        typeKey = "profile.biometric_type.face".tr();
-        break;
-      default:
-        typeKey = "profile.biometric_type.biometric".tr();
-    }
-
-
     return _buildSection(
       theme,
       isDark,
       title: 'profile.security'.tr(),
       icon: Icons.security_outlined,
       children: [
-        // _buildSwitchTile(
-        //   icon: _getBiometricIcon(),
-        //   title: "profile.biometric_login".tr(namedArgs: {'type': typeKey}),
-        //   subtitle: _canCheckBiometrics && _availableBiometrics.isNotEmpty
-        //       ? "profile.biometric_subtitle".tr(namedArgs: {'type': typeKey})
-        //       : "profile.biometric_not_supported".tr(),
-        //   value: _biometricEnabled,
-        //   onChanged: _canCheckBiometrics && _availableBiometrics.isNotEmpty
-        //       ? _toggleBiometric
-        //       : null,
-        //   isDark: isDark,
-        // ),
         _buildActionTile(
           icon: Icons.lock_outline,
           title: 'profile.change_password'.tr(),
           subtitle: 'profile.change_password_subtitle'.tr(),
           onTap: () {
             Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const ChangePasswordScreen(),
-                ),
+              context,
+              MaterialPageRoute(
+                builder: (_) => const ChangePasswordScreen(),
+              ),
             );
-            // showDialog(
-            //   context: context,
-            //   builder: (_) => AlertDialog(
-            //     title: Text('⚙️ ' + 'profile.feature_in_development'.tr()),
-            //     content: Text('profile.feature_in_development_description'.tr()),
-            //     actions: [
-            //       TextButton(
-            //         onPressed: () => Navigator.pop(context),
-            //         child: Text('OK'),
-            //       ),
-            //     ],
-            //   ),
-            // );
           },
           isDark: isDark,
         ),
-        // Thêm dòng Thiết bị
         _buildActionTile(
           icon: Icons.devices_rounded,
-          title: 'Thiết bị',
-          subtitle: 'Quản lý các thiết bị đang đăng nhập',
+          title: 'profile.device'.tr(),
+          subtitle: 'profile.device_subtitle'.tr(),
           onTap: () {
             Navigator.push(
               context,
@@ -990,11 +580,10 @@ class ProfileScreenState extends State<ProfileScreen>
           },
           isDark: isDark,
         ),
-        // Thêm dòng Face ID
         _buildActionTile(
           icon: Icons.face_rounded,
-          title: 'Face ID',
-          subtitle: 'Thiết lập nhận diện khuôn mặt',
+          title: 'profile.face_id'.tr(),
+          subtitle: 'profile.face_id_subtitle'.tr(),
           onTap: () {
             Navigator.push(
               context,
@@ -1005,7 +594,6 @@ class ProfileScreenState extends State<ProfileScreen>
           },
           isDark: isDark,
         ),
-
       ],
     );
   }
@@ -1036,7 +624,8 @@ class ProfileScreenState extends State<ProfileScreen>
           onTap: () {
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const NotificationSettingsScreen()),
+              MaterialPageRoute(
+                  builder: (context) => const NotificationSettingsScreen()),
             );
           },
           isDark: isDark,
@@ -1049,46 +638,46 @@ class ProfileScreenState extends State<ProfileScreen>
         _buildActionTile(
           icon: Icons.language_outlined,
           title: 'profile.language'.tr(),
-          subtitle: _getLanguageName(), // ✅ Hiển thị ngôn ngữ hiện tại
-          onTap: _showLanguageDialog, // ✅ Mở dialog chọn ngôn ngữ
+          subtitle: _getLanguageName(),
+          onTap: _showLanguageDialog,
           isDark: isDark,
         ),
       ],
     );
   }
 
-
   String _getLanguageName() {
     final locale = context.locale;
     if (locale.languageCode == 'vi') {
-      return 'profile.vietnamese'.tr(); // "Tiếng Việt"
+      return 'profile.vietnamese'.tr();
     } else if (locale.languageCode == 'en') {
-      return 'profile.english'.tr(); // "English"
+      return 'profile.english'.tr();
     }
     return 'profile.vietnamese'.tr();
   }
 
-
   void _showLanguageDialog() {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text('language.title'.tr()),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             RadioListTile<Locale>(
               title: Text('profile.vietnamese'.tr()),
-              value: Locale('vi', 'VN'),
+              value: const Locale('vi', 'VN'),
               groupValue: context.locale,
               onChanged: (value) async {
-                await context.setLocale(value!);
-                Navigator.pop(context);
-
-                ScaffoldMessenger.of(context).showSnackBar(
+                if (value == null) return;
+                Navigator.pop(dialogContext);
+                await context.setLocale(value);
+                messenger.showSnackBar(
                   SnackBar(
                     content: Text(
-                      'language.changed'.tr(namedArgs: {'language': 'Tiếng Việt'}),
+                      'language.changed'
+                          .tr(namedArgs: {'language': 'Tiếng Việt'}),
                     ),
                   ),
                 );
@@ -1096,16 +685,17 @@ class ProfileScreenState extends State<ProfileScreen>
             ),
             RadioListTile<Locale>(
               title: Text('profile.english'.tr()),
-              value: Locale('en', 'US'),
+              value: const Locale('en', 'US'),
               groupValue: context.locale,
               onChanged: (value) async {
-                await context.setLocale(value!);
-                Navigator.pop(context);
-
-                ScaffoldMessenger.of(context).showSnackBar(
+                if (value == null) return;
+                Navigator.pop(dialogContext);
+                await context.setLocale(value);
+                messenger.showSnackBar(
                   SnackBar(
                     content: Text(
-                      'language.changed'.tr(namedArgs: {'language': 'English'}),
+                      'language.changed'
+                          .tr(namedArgs: {'language': 'English'}),
                     ),
                   ),
                 );
@@ -1187,7 +777,6 @@ class ProfileScreenState extends State<ProfileScreen>
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
-
             child: Row(
               children: [
                 Icon(
@@ -1221,14 +810,13 @@ class ProfileScreenState extends State<ProfileScreen>
     required bool isDark,
   }) {
     return ListTile(
-      dense: true, // GIẢM CHIỀU CAO TỔNG THỂ
-
+      dense: true,
       leading: Container(
         width: 40,
         height: 40,
         decoration: BoxDecoration(
           color: isDark
-              ? Colors.grey[800]?.withValues(alpha:  0.5)
+              ? Colors.grey[800]?.withValues(alpha: 0.5)
               : Colors.grey[100],
           borderRadius: BorderRadius.circular(10),
         ),
@@ -1247,67 +835,13 @@ class ProfileScreenState extends State<ProfileScreen>
       ),
       subtitle: Text(
         value,
-        maxLines: 1, // Giới hạn hiển thị 1 dòng
-        overflow: TextOverflow.ellipsis, // Hiển thị dấu "..."
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w600,
           color: isDark ? Colors.white : const Color(0xFF0F172A),
         ),
-      ),
-    );
-  }
-
-  Widget _buildSwitchTile({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required bool value,
-    required Function(bool)? onChanged,
-    required bool isDark,
-  }) {
-    final isDisabled = onChanged == null;
-
-    return ListTile(
-      leading: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: isDisabled
-              ? (isDark ? Colors.grey[900] : Colors.grey[200])
-              : (isDark
-              ? Colors.grey[800]?.withOpacity(0.5)
-              : Colors.grey[100]),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(
-          icon,
-          size: 20,
-          color: isDisabled
-              ? (isDark ? Colors.grey[700] : Colors.grey[400])
-              : (isDark ? Colors.grey[400] : Colors.grey[600]),
-        ),
-      ),
-      title: Text(
-        title,
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w600,
-          color: isDisabled
-              ? (isDark ? Colors.grey[600] : Colors.grey[400])
-              : (isDark ? Colors.white : const Color(0xFF0F172A)),
-        ),
-      ),
-      subtitle: Text(
-        subtitle,
-        style: TextStyle(
-          fontSize: 13,
-          color: isDark ? Colors.grey[500] : Colors.grey[600],
-        ),
-      ),
-      trailing: Switch(
-        value: value,
-        onChanged: onChanged,
       ),
     );
   }
@@ -1364,16 +898,6 @@ class ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  IconData _getBiometricIcon() {
-    if (_availableBiometrics.contains(BiometricType.face)) {
-      return Icons.face;
-    } else if (_availableBiometrics.contains(BiometricType.fingerprint)) {
-      return Icons.fingerprint;
-    } else {
-      return Icons.security;
-    }
-  }
-
   IconData _getThemeIcon() {
     switch (_themeMode) {
       case ThemeMode.light:
@@ -1381,7 +905,6 @@ class ProfileScreenState extends State<ProfileScreen>
       case ThemeMode.dark:
         return Icons.dark_mode;
       case ThemeMode.system:
-      default:
         return Icons.brightness_auto;
     }
   }
@@ -1393,7 +916,6 @@ class ProfileScreenState extends State<ProfileScreen>
       case ThemeMode.dark:
         return 'theme.dark'.tr();
       case ThemeMode.system:
-      default:
         return 'theme.system'.tr();
     }
   }
@@ -1401,60 +923,45 @@ class ProfileScreenState extends State<ProfileScreen>
   void _showLogoutDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         icon: const Icon(
           Icons.logout,
           color: Colors.red,
           size: 48,
         ),
-        title: const Text('Đăng xuất'),
-        content: const Text('Bạn có chắc chắn muốn đăng xuất?'),
+        title: Text('profile.logout_title'.tr()),
+        content: Text('profile.logout_confirm'.tr()),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Hủy'),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text('profile.cancel'.tr()),
           ),
           ElevatedButton(
             onPressed: () async {
-              // Xóa thông tin đăng nhập
               await _storage.delete(key: 'saved_mssv');
               await _storage.delete(key: 'auth_token');
               final prefs = await SharedPreferences.getInstance();
               await prefs.remove('biometric_enabled');
+              await prefs.remove('biometric_authenticated');
               await prefs.remove('login_timestamp');
 
-              // ✅ QUAN TRỌNG: Reset trạng thái xác thực sinh trắc học
-              await prefs.remove('biometric_authenticated');
-
-              // Cập nhật state
-              setState(() {
-                _biometricEnabled = false;
-              });
-
-              Navigator.pop(context);
+              if (!mounted) return;
+              Navigator.pop(dialogContext);
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) => LoginScreen()),
-              );
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Đã đăng xuất thành công'),
-                  backgroundColor: Colors.green,
-                ),
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
               );
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
             ),
-            child: const Text('Đăng xuất'),
+            child: Text('profile.logout_title'.tr()),
           ),
         ],
       ),
     );
   }
-
 
   Widget _buildErrorView(bool isDark) {
     return Center(
@@ -1463,7 +970,6 @@ class ProfileScreenState extends State<ProfileScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Error icon
             Container(
               width: 120,
               height: 120,
@@ -1487,12 +993,9 @@ class ProfileScreenState extends State<ProfileScreen>
                 ),
               ),
             ),
-
             const SizedBox(height: 24),
-
-            // Title
             Text(
-              'Không thể tải dữ liệu',
+              'profile.load_error_title'.tr(),
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -1500,10 +1003,7 @@ class ProfileScreenState extends State<ProfileScreen>
               ),
               textAlign: TextAlign.center,
             ),
-
             const SizedBox(height: 12),
-
-            // Error message
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -1522,7 +1022,7 @@ class ProfileScreenState extends State<ProfileScreen>
                     child: Text(
                       _errorMessage.isNotEmpty
                           ? _errorMessage
-                          : 'Đã xảy ra lỗi khi tải thông tin cá nhân',
+                          : 'profile.load_error_default'.tr(),
                       style: TextStyle(
                         fontSize: 14,
                         color: isDark ? Colors.grey[300] : Colors.grey[700],
@@ -1533,17 +1033,11 @@ class ProfileScreenState extends State<ProfileScreen>
                 ],
               ),
             ),
-
             const SizedBox(height: 32),
-
-            // Retry button
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () {
-                  print('🔄 Retry button pressed');
-                  _loadProfile(); // ✅ Gọi trực tiếp _loadProfile
-                },
+                onPressed: _loadProfile,
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   backgroundColor: Theme.of(context).colorScheme.primary,
@@ -1551,21 +1045,19 @@ class ProfileScreenState extends State<ProfileScreen>
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
-                icon: const Icon(Icons.refresh_rounded, size: 22,color: Colors.white),
-                label: const Text(
-                  'Thử lại',
-                  style: TextStyle(
+                icon: const Icon(Icons.refresh_rounded,
+                    size: 22, color: Colors.white),
+                label: Text(
+                  'profile.retry'.tr(),
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
-
                   ),
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
-
           ],
         ),
       ),
@@ -1579,7 +1071,6 @@ class ProfileScreenState extends State<ProfileScreen>
 
     return CustomScrollView(
       slivers: [
-        // AppBar skeleton
         SliverAppBar(
           expandedHeight: 50,
           pinned: true,
@@ -1592,11 +1083,9 @@ class ProfileScreenState extends State<ProfileScreen>
             ),
           ],
         ),
-
         SliverToBoxAdapter(
           child: Column(
             children: [
-              // Avatar + tên
               Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -1616,47 +1105,34 @@ class ProfileScreenState extends State<ProfileScreen>
                   ],
                 ),
               ),
-
               const SizedBox(height: 16),
-
-              // Section: Thông tin sinh viên
               _buildSkeletonSection(
                 titleWidth: 140,
                 iconColor: baseColor,
                 rows: 5,
                 isDark: isDark,
               ),
-
               const SizedBox(height: 16),
-
-              // Section: Bảo mật
               _buildSkeletonSection(
                 titleWidth: 100,
                 iconColor: baseColor,
                 rows: 2,
                 isDark: isDark,
               ),
-
               const SizedBox(height: 16),
-
-              // Section: Cài đặt
               _buildSkeletonSection(
                 titleWidth: 90,
                 iconColor: baseColor,
                 rows: 3,
                 isDark: isDark,
               ),
-
               const SizedBox(height: 16),
-
-              // Section: Khác
               _buildSkeletonSection(
                 titleWidth: 60,
                 iconColor: baseColor,
                 rows: 3,
                 isDark: isDark,
               ),
-
               const SizedBox(height: 32),
             ],
           ),
@@ -1665,7 +1141,6 @@ class ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-// Helper: Tạo section skeleton
   Widget _buildSkeletonSection({
     required double titleWidth,
     required Color iconColor,
@@ -1695,16 +1170,44 @@ class ProfileScreenState extends State<ProfileScreen>
             ),
           ),
           const Divider(height: 1, color: Colors.grey),
-          ...List.generate(rows, (index) => ListTile(
-            leading: Container(width: 40, height: 40, color: base),
-            title: Container(width: 100, height: 16, color: base),
-            subtitle: Container(width: double.infinity, height: 14, color: highlight),
-            trailing: rows == 1 && index == 0
-                ? Container(width: 50, height: 30, color: highlight) // Switch giả
-                : Icon(Icons.arrow_forward_ios, size: 16, color: highlight),
-          )),
+          ...List.generate(
+              rows,
+                  (index) => ListTile(
+                leading: Container(width: 40, height: 40, color: base),
+                title: Container(width: 100, height: 16, color: base),
+                subtitle: Container(
+                    width: double.infinity,
+                    height: 14,
+                    color: highlight),
+                trailing: Icon(Icons.arrow_forward_ios,
+                    size: 16, color: highlight),
+              )),
         ],
       ),
+    );
+  }
+}
+
+/// Animation mờ dần + trượt lên khi section xuất hiện
+class _AnimatedItem extends StatelessWidget {
+  final int index;
+  final Widget child;
+  const _AnimatedItem({required this.index, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: 250 + (index * 80).clamp(0, 400)),
+      curve: Curves.easeOut,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 24 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: child,
     );
   }
 }

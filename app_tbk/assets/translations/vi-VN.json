@@ -67,7 +67,8 @@
     "time": "Thời gian",
     "school_day": "Ngày học",
     "number_of_periods" : "Số tiết",
-    "periods": "tiết"
+    "periods": "tiết",
+    "break_time" : "Thời gian giải lao"
   },
   "notification": {
     "title": "Thông báo",
@@ -115,7 +116,19 @@
     "logout": "Đăng xuất",
     "logout_subtitle": "Thoát khỏi tài khoản",
     "logout_confirm": "Bạn có chắc chắn muốn đăng xuất?",
-    "cancel": "Hủy"
+    "cancel": "Hủy",
+    "device": "Thiết bị",
+    "device_subtitle": "Quản lý các thiết bị đang đăng nhập",
+    "face_id": "Face ID",
+    "face_id_subtitle": "Thiết lập nhận diện khuôn mặt",
+    "male": "Nam",
+    "female": "Nữ",
+    "theme_changed": "Đã chuyển sang chế độ {mode}",
+    "logout_title": "Đăng xuất",
+    "load_error_title": "Không thể tải dữ liệu",
+    "load_error_default": "Đã xảy ra lỗi khi tải thông tin cá nhân",
+    "retry": "Thử lại"
+
   },
   "theme": {
     "title": "Chọn giao diện",
@@ -213,6 +226,22 @@
     "success_title": "Thành công",
     "error_title": "Lỗi",
     "error_settings_null" : "Cài đặt chưa được khởi tạo"
+
+  },
+  "absence_warning": {
+    "title": "Cảnh báo chuyên cần",
+    "good_status": "Chuyên cần tốt. Không có môn nào vượt ngưỡng vắng.",
+    "banned": "Cấm thi",
+    "warning": "Chú ý",
+    "absent_info": "Đã vắng {absentPeriods}/{allowedPeriods} tiết cho phép",
+    "context_info": "Đã học: {pastSessions}/{totalSessions} buổi • Tổng {totalPeriods} tiết",
+    "reload": "Tải lại",
+    "banned_msg": "Nguy cơ cấm thi!",
+    "warning_msg": "Cảnh báo chuyên cần",
+    "banned_body": "Cảnh báo: Bạn đã vắng {absentPeriods} tiết môn {subject}, vượt quá ngưỡng cho phép và có nguy cơ cấm thi.",
+    "warning_body": "Chú ý: Bạn đã vắng {absentPeriods} tiết môn {subject}. Sắp chạm ngưỡng cấm thi!",
+    "load_failed": "Không thể tải dữ liệu cảnh báo",
+    "retry": "Thử lại"
 
   }
 }

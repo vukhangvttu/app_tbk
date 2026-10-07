@@ -1,6 +1,8 @@
 import 'package:app_tbk/features/attendance/screens/attendance_history_screen.dart';
 import 'package:app_tbk/features/check-in/screens/checkin_screen.dart';
+import 'package:app_tbk/features/absence-warning/screens/absence_warning_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:easy_localization/easy_localization.dart';
 
 class AttendanceManagementScreen extends StatefulWidget {
   const AttendanceManagementScreen({Key? key}) : super(key: key);
@@ -10,8 +12,6 @@ class AttendanceManagementScreen extends StatefulWidget {
 }
 
 class _AttendanceManagementScreenState extends State<AttendanceManagementScreen> {
-  String? _selectedScreen;
-
   void _navigateTo(String screen) {
     if (screen == 'attendance') {
       Navigator.push(
@@ -29,134 +29,187 @@ class _AttendanceManagementScreenState extends State<AttendanceManagementScreen>
           builder: (context) => const CheckInScreen(),
         ),
       );
+    } else if (screen == 'absence_warning') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const AbsenceWarningScreen(),
+        ),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: Text('Danh sách chức năng', style: TextStyle(fontWeight: FontWeight.bold)),
-
-        elevation: 0,
-
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            // Điểm danh
-            _buildMenuItem(
-              context: context,
-              icon: Icons.history_outlined,
-              title: 'Điểm danh',
-              subtitle: 'Xem lịch sử điểm danh',
-              onTap: () => _navigateTo('attendance'),
-              isDark: isDark,
-            ),
-            const SizedBox(height: 16),
-
-            // Check-in
-            _buildMenuItem(
-              context: context,
-              icon: Icons.camera_alt_outlined,
-              title: 'Check-in',
-              subtitle: 'Check-in sự kiện',
-              onTap: () => _navigateTo('checkin'),
-              isDark: isDark,
-            ),
-          ],
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        title: Text(
+          'Danh sách chức năng',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 22,
+            color: isDark ? Colors.white : Colors.black87,
+          ),
         ),
+        elevation: 0,
+        iconTheme: IconThemeData(
+          color: isDark ? Colors.white : Colors.black87,
+        ),
+      ),
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                const SizedBox(height: 16),
+                _buildSection(
+                  theme,
+                  isDark,
+                  title: 'Quản lý học tập & Sự kiện',
+                  icon: Icons.school_outlined,
+                  children: [
+                    _buildActionTile(
+                      icon: Icons.warning_amber_rounded,
+                      title: 'absence_warning.title'.tr(),
+                      subtitle: 'Xem cảnh báo môn học có nguy cơ cấm thi',
+                      onTap: () => _navigateTo('absence_warning'),
+                      isDark: isDark,
+                      iconColor: Colors.orange,
+                    ),
+                    _buildActionTile(
+                      icon: Icons.history_outlined,
+                      title: 'Điểm danh',
+                      subtitle: 'Xem lịch sử điểm danh',
+                      onTap: () => _navigateTo('attendance'),
+                      isDark: isDark,
+                      iconColor: Colors.blue,
+                    ),
+                    _buildActionTile(
+                      icon: Icons.camera_alt_outlined,
+                      title: 'Check-in',
+                      subtitle: 'Check-in sự kiện',
+                      onTap: () => _navigateTo('checkin'),
+                      isDark: isDark,
+                      iconColor: Colors.green,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 32),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildMenuItem({
-    required BuildContext context,
-    required IconData icon,
+  Widget _buildSection(
+    ThemeData theme,
+    bool isDark, {
     required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-    required bool isDark,
+    required IconData icon,
+    required List<Widget> children,
   }) {
     return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
-        color: isDark ? Colors.grey.shade800.withValues(alpha: 0.8) : Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isDark ? Colors.white.withValues(alpha : 0.1) : Colors.grey.shade200,
-          width: 1,
-        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
+            color: isDark
+                ? Colors.black.withValues(alpha: 0.2)
+                : Colors.grey.withValues(alpha: 0.1),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
         ],
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                // Icon
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF6366F1).withValues(alpha:  0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    icon,
-                    size: 32,
-                    color: const Color(0xFF6366F1),
-                  ),
-                ),
-                const SizedBox(width: 16),
-
-                // Text content
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        subtitle,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: isDark ? Colors.white60 : Colors.grey.shade600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Arrow icon
                 Icon(
-                  Icons.chevron_right,
-                  color: isDark ? Colors.white38 : Colors.grey.shade400,
-                  size: 28,
+                  icon,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  ),
                 ),
               ],
             ),
           ),
+          const Divider(height: 1),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    required bool isDark,
+    Color? iconColor,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: iconColor != null
+              ? iconColor.withValues(alpha: 0.1)
+              : (isDark
+                  ? Colors.grey.shade800.withValues(alpha: 0.5)
+                  : Colors.grey.shade100),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(
+          icon,
+          size: 20,
+          color: iconColor ?? (isDark ? Colors.grey.shade400 : Colors.grey.shade600),
         ),
       ),
+      title: Text(
+        title,
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+          color: isDark ? Colors.white : const Color(0xFF0F172A),
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          fontSize: 13,
+          color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Icon(
+        Icons.arrow_forward_ios,
+        size: 16,
+        color: isDark ? Colors.grey.shade600 : Colors.grey.shade400,
+      ),
+      onTap: onTap,
     );
   }
 }

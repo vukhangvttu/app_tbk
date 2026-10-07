@@ -28,14 +28,24 @@ class NotificationHistoryService {
     }
   }
 
-  /// 1. Lấy danh sách thông báo theo MSSV
+  /// 1. Lấy danh sách thông báo theo MSSV (Có hỗ trợ phân trang)
   /// GET /notification-history/:mssv
-  static Future<List<NotificationHistory>> fetchNotifications(BuildContext context) async {
+  static Future<Map<String, dynamic>> fetchNotifications(
+    BuildContext context, {
+    int page = 1,
+    int limit = 20,
+    int? beforeId,
+    int? afterId,
+  }) async {
     final mssv = await _getMssv();
+
+    String queryParams = '?page=$page&limit=$limit';
+    if (beforeId != null) queryParams += '&before_id=$beforeId';
+    if (afterId != null) queryParams += '&after_id=$afterId';
 
     var response = await AuthService.authenticatedRequestNotification(
       method: 'GET',
-      endpoint: '/notification-history/$mssv',
+      endpoint: '/notification-history/$mssv$queryParams',
     ).timeout(
       _timeout,
       onTimeout: () => throw TimeoutException('Kết nối quá hạn (20s). Vui lòng thử lại.'),
@@ -45,14 +55,14 @@ class NotificationHistoryService {
     if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
       response = await AuthService.authenticatedRequestNotification(
         method: 'GET',
-        endpoint: '/notification_history/$mssv',
+        endpoint: '/notification_history/$mssv$queryParams',
       ).timeout(_timeout);
     }
 
     if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
       response = await AuthService.authenticatedRequestNotification(
         method: 'GET',
-        endpoint: '/notifications/$mssv',
+        endpoint: '/notifications/$mssv$queryParams',
       ).timeout(_timeout);
     }
 
@@ -67,17 +77,23 @@ class NotificationHistoryService {
       }
 
       dynamic rawData;
+      bool hasMore = false;
+
       if (decoded is Map<String, dynamic>) {
         if (decoded['success'] == false) {
           throw Exception(decoded['message'] ?? 'Lỗi không xác định từ server');
         }
         rawData = decoded['data'] ?? decoded['notifications'] ?? decoded['result'];
+        
+        if (decoded['pagination'] != null) {
+          hasMore = decoded['pagination']['has_more'] == true;
+        }
       } else if (decoded is List) {
         rawData = decoded;
       }
 
       if (rawData == null || rawData is! List) {
-        return [];
+        return {'data': <NotificationHistory>[], 'has_more': false};
       }
 
       final List<dynamic> jsonData = rawData;
@@ -87,7 +103,16 @@ class NotificationHistoryService {
 
       // Sắp xếp mới nhất trước
       notifications.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-      return notifications;
+      
+      // Nếu backend cũ không trả về pagination, ta tự suy luận
+      if (decoded is Map<String, dynamic> && decoded['pagination'] == null) {
+         hasMore = notifications.length >= limit;
+      }
+
+      return {
+        'data': notifications,
+        'has_more': hasMore,
+      };
     } else {
       final decoded = _safeJsonDecode(response.body);
       if (decoded is Map && decoded['message'] != null) {
@@ -97,20 +122,20 @@ class NotificationHistoryService {
     }
   }
 
-  /// 2. Lấy số lượng thông báo chưa đọc
-  /// GET /notification-history/:mssv/unread-count
-  static Future<int> getUnreadCount(BuildContext context) async {
+  /// 2. Lấy tổng hợp thống kê thông báo (unread & total)
+  /// GET /notification-history/:mssv/summary
+  static Future<Map<String, int>> getNotificationStats(BuildContext context) async {
     final mssv = await _getMssv();
 
     var response = await AuthService.authenticatedRequestNotification(
       method: 'GET',
-      endpoint: '/notification-history/$mssv/unread-count',
+      endpoint: '/notification-history/$mssv/summary',
     ).timeout(_timeout);
 
     if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
       response = await AuthService.authenticatedRequestNotification(
         method: 'GET',
-        endpoint: '/notification_history/$mssv/unread-count',
+        endpoint: '/notification-history/$mssv/unread-count',
       ).timeout(_timeout);
     }
 
@@ -119,20 +144,30 @@ class NotificationHistoryService {
     if (response.statusCode == 200) {
       final decoded = _safeJsonDecode(response.body);
       if (decoded is Map<String, dynamic>) {
-        if (decoded['success'] == false) return 0;
+        if (decoded['success'] == false) return {'unread': 0, 'total': 0};
         final data = decoded['data'];
-        if (data == null) return 0;
+        if (data == null) return {'unread': 0, 'total': 0};
+
         if (data is Map) {
-          return (data['unread_count'] ?? data['unreadCount'] ?? 0) as int;
+          int unread = (data['unread_count'] ?? data['unreadCount'] ?? data['unread'] ?? 0) as int;
+          int total = (data['total_count'] ?? data['totalCount'] ?? data['total'] ?? 0) as int;
+          return {'unread': unread, 'total': total};
         }
-        if (data is int) return data;
+        if (data is int) return {'unread': data, 'total': 0};
       } else if (decoded is int) {
-        return decoded;
+        return {'unread': decoded, 'total': 0};
       }
-      return 0;
+      return {'unread': 0, 'total': 0};
     } else {
-      return 0;
+      return {'unread': 0, 'total': 0};
     }
+  }
+
+  /// Lấy số lượng thông báo chưa đọc (giữ lại cho tương thích)
+  /// GET /notification-history/:mssv/unread-count
+  static Future<int> getUnreadCount(BuildContext context) async {
+    final stats = await getNotificationStats(context);
+    return stats['unread'] ?? 0;
   }
 
   /// 3. Đánh dấu tất cả thông báo là đã đọc

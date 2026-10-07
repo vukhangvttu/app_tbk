@@ -5,8 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:app_tbk/features/auth/services/auth_state_manager.dart';
 import 'package:app_tbk/features/auth/services/post_login_initializer.dart';
+import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'package:app_tbk/features/version/services/app_version_service.dart';
+import 'package:app_tbk/features/version/widgets/app_update_dialog.dart';
 import 'features/auth/screens/login_screen.dart';
 
 
@@ -30,10 +33,41 @@ class _AppInitializerScreenState extends State<AppInitializerScreen> {
   Future<void> _initializeApp() async {
     try {
       setState(() {
+        _statusMessage = 'Đang kiểm tra phiên bản...';
+      });
+
+      // 1. Kiểm tra cập nhật ứng dụng
+      final versionResult = await AppVersionService.checkVersion();
+      if (!mounted) return;
+
+      if (versionResult.hasUpdate && versionResult.appVersion != null) {
+        if (versionResult.forceUpdate) {
+          // Bắt buộc cập nhật -> Dừng luồng khởi động
+          await AppUpdateDialog.show(
+            context,
+            appVersion: versionResult.appVersion!,
+            currentVersion: versionResult.currentVersion,
+            forceUpdate: true,
+          );
+          return;
+        } else {
+          // Khuyến nghị cập nhật -> Cho phép chọn "Để sau"
+          await AppUpdateDialog.show(
+            context,
+            appVersion: versionResult.appVersion!,
+            currentVersion: versionResult.currentVersion,
+            forceUpdate: false,
+          );
+        }
+      }
+
+      if (!mounted) return;
+
+      setState(() {
         _statusMessage = 'Đang kiểm tra phiên đăng nhập...';
       });
 
-      // Kiểm tra token có hợp lệ không (tự động refresh nếu cần)
+      // 2. Kiểm tra token có hợp lệ không (tự động refresh nếu cần)
       final bool isLoggedIn = await AuthService.isTokenValid();
 
       if (!mounted) return;
@@ -47,7 +81,17 @@ class _AppInitializerScreenState extends State<AppInitializerScreen> {
         });
 
         // Lấy MSSV từ secure storage
-        final String? mssv = await AuthService.getSavedMssv();
+        String? mssv = await AuthService.getSavedMssv();
+
+        if (mssv == null || mssv.isEmpty) {
+          try {
+            final token = await AuthService.getAccessToken();
+            if (token != null) {
+              final decoded = JwtDecoder.decode(token);
+              mssv = decoded['mssv']?.toString();
+            }
+          } catch (_) {}
+        }
 
         if (mssv != null && mssv.isNotEmpty) {
           setState(() {

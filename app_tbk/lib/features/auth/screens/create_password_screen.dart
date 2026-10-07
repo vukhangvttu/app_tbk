@@ -44,7 +44,6 @@ class _CreatePasswordScreenState extends State<CreatePasswordScreen> {
       try {
 
         print('📧 Email: ${widget.mssv}');
-        print('🔑 Mật khẩu: ${_passwordController.text}');
 
         // Gọi API tạo tài khoản với OTP đã verify
         final success = await RegisterService.createPassword(
