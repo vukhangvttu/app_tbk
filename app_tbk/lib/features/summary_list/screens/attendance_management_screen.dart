@@ -1,6 +1,8 @@
 import 'package:app_tbk/features/attendance/screens/attendance_history_screen.dart';
 import 'package:app_tbk/features/check-in/screens/checkin_screen.dart';
 import 'package:app_tbk/features/absence-warning/screens/absence_warning_screen.dart';
+import 'package:app_tbk/features/training_point/screens/training_point_screen.dart';
+import 'package:app_tbk/features/course_grade/screens/course_grade_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:easy_localization/easy_localization.dart';
 
@@ -34,6 +36,20 @@ class _AttendanceManagementScreenState extends State<AttendanceManagementScreen>
         context,
         MaterialPageRoute(
           builder: (context) => const AbsenceWarningScreen(),
+        ),
+      );
+    } else if (screen == 'training_point') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const TrainingPointScreen(),
+        ),
+      );
+    } else if (screen == 'course_grade') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const CourseGradeScreen(),
         ),
       );
     }
@@ -88,6 +104,22 @@ class _AttendanceManagementScreenState extends State<AttendanceManagementScreen>
                       onTap: () => _navigateTo('attendance'),
                       isDark: isDark,
                       iconColor: Colors.blue,
+                    ),
+                    _buildActionTile(
+                      icon: Icons.score_outlined,
+                      title: 'Điểm học phần',
+                      subtitle: 'Xem điểm các môn học',
+                      onTap: () => _navigateTo('course_grade'),
+                      isDark: isDark,
+                      iconColor: Colors.indigo,
+                    ),
+                    _buildActionTile(
+                      icon: Icons.star_outline_rounded,
+                      title: 'Điểm rèn luyện',
+                      subtitle: 'Xem lịch sử điểm rèn luyện',
+                      onTap: () => _navigateTo('training_point'),
+                      isDark: isDark,
+                      iconColor: Colors.purple,
                     ),
                     _buildActionTile(
                       icon: Icons.camera_alt_outlined,

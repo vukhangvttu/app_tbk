@@ -1,0 +1,71 @@
+name: loginoauth2
+description: "A new Flutter project."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ---- Quản lý trạng thái ----
+  provider: ^6.1.2
+
+  # ---- OAuth2 / Đăng nhập bằng email (Google) ----
+  google_sign_in: ^6.2.1
+
+  # ---- Bộ icon phong phú (thay thế / bổ sung Material Icons) ----
+  font_awesome_flutter: ^10.7.0
+  iconsax: ^0.0.8
+
+  # ---- Font chữ đẹp, hiện đại ----
+  google_fonts: ^6.2.1
+
+  # ---- Lưu trạng thái theme (sáng/tối) và trạng thái đăng nhập ----
+  shared_preferences: ^2.2.3
+
+  # ---- Hiệu ứng loading / skeleton đẹp mắt ----
+  flutter_svg: ^2.0.10+1
+  animated_theme_switcher: ^2.0.10
+
+  cupertino_icons: ^1.0.8
+
+  google_maps_flutter: ^2.9.0
+  http: ^1.2.0
+  google_polyline_algorithm: ^3.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Khai báo font chữ tuỳ chỉnh (tuỳ chọn, có thể bỏ nếu dùng google_fonts)
+  # fonts:
+  #   - family: Poppins
+  #     fonts:
+  #       - asset: assets/fonts/Poppins-Regular.ttf
+  #       - asset: assets/fonts/Poppins-Bold.ttf
+  #         weight: 700
+
+  assets:
+    - assets/images/

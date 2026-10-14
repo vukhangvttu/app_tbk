@@ -250,4 +250,56 @@ class ApiService {
       throw Exception('Không cập nhật được lịch học: $e');
     }
   }
+
+  /// Lấy điểm rèn luyện
+  static Future<List<dynamic>> getTrainingPoints(int idSinhVien) async {
+    try {
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'GET',
+        endpoint: '/diem-ren-luyen/$idSinhVien',
+      );
+
+      if (response != null && response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          return data['data'] ?? [];
+        } else {
+          throw Exception('Lỗi: ${data['error'] ?? 'Unknown error'}');
+        }
+      } else {
+        throw Exception('Lỗi ${response?.statusCode}: ${response?.body}');
+      }
+    } catch (e) {
+      if (e.toString().contains('Không tìm thấy token') || e.toString().contains('hết hạn')) {
+        rethrow;
+      }
+      throw Exception('Không tải được điểm rèn luyện: $e');
+    }
+  }
+
+  /// Lấy điểm học phần
+  static Future<List<dynamic>> getCourseGrades(int idSinhVien) async {
+    try {
+      final response = await AuthService.authenticatedRequestLichSinhVien(
+        method: 'GET',
+        endpoint: '/bang-diem-hoc-phan/$idSinhVien',
+      );
+
+      if (response != null && response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          return data['data'] ?? [];
+        } else {
+          throw Exception('Lỗi: ${data['error'] ?? 'Unknown error'}');
+        }
+      } else {
+        throw Exception('Lỗi ${response?.statusCode}: ${response?.body}');
+      }
+    } catch (e) {
+      if (e.toString().contains('Không tìm thấy token') || e.toString().contains('hết hạn')) {
+        rethrow;
+      }
+      throw Exception('Không tải được điểm học phần: $e');
+    }
+  }
 }
