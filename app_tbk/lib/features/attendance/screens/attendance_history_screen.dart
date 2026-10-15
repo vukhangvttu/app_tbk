@@ -1,9 +1,13 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../auth/services/auth_service.dart';
 import '../services/attendance_history_service.dart';
+
+final _fmtHm = DateFormat('HH:mm');
+final _fmtDmy = DateFormat('dd/MM/yyyy');
 
 /// Parse timestamp từ server, GIỮ NGUYÊN giờ như server trả về,
 /// không convert theo timezone thiết bị (vì server đã trả sẵn giờ VN
@@ -59,6 +63,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   bool _isLoading = true;
   bool _dangTai = false;
   String? _error;
+  bool _playEntrance = false; // chỉ chạy animation xuất hiện ở lần tải mới, không phải khi kéo làm mới
 
   // Filter states
   String? _selectedMaMon;
@@ -121,14 +126,19 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     });
   }
 
-  Future<void> _fetchAttendanceHistory() async {
-    if (_dangTai || !mounted) return;
+  String _sig(List<dynamic> l) => jsonEncode(l);
 
-    setState(() {
-      _dangTai = true;
-      _isLoading = true;
-      _error = null;
-    });
+  Future<void> _fetchAttendanceHistory({bool silent = false}) async {
+    if (_dangTai || !mounted) return;
+    _dangTai = true;
+
+    // silent = true khi gọi từ RefreshIndicator: không setState, không đổi UI giữa lúc kéo.
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
       final idSinhVien = await AuthService.getIdSinhVien();
@@ -136,8 +146,11 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         throw Exception('Không tìm thấy thông tin sinh viên');
       }
 
-      debugPrint(
-          '🔄 Fetching data từ API: TuNgay=$_tuNgayParam, DenNgay=$_denNgayParam, SoNgay=$_soNgayParam');
+      // Giữ tối thiểu 400ms để animation sau khi thả tay lắng xuống rồi mới đổi dữ liệu
+      final minWait = silent
+          ? Future<void>.delayed(const Duration(milliseconds: 400))
+          : Future<void>.value();
+
       final data = await AttendanceHistoryService.getAttendanceHistory(
         idSinhVien,
         tuNgay: _tuNgayParam,
@@ -145,28 +158,52 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         soNgay: _soNgayParam,
       );
 
-      // Sort NgayTao giảm dần (dùng chung parser, không toLocal)
       data.sort((a, b) {
         final dateA = _parseServerDateTime(a['NgayTao']);
         final dateB = _parseServerDateTime(b['NgayTao']);
         return dateB.compareTo(dateA);
       });
 
+      await minWait;
       if (!mounted) return;
+
+      // Kéo làm mới mà dữ liệu không đổi → không rebuild gì cả
+      if (silent && _error == null && _sig(data) == _sig(_attendanceList)) return;
+
       setState(() {
         _attendanceList = data;
         _extractMaMon();
         _applyFilters();
         _isLoading = false;
-        _dangTai = false;
+        _error = null;
+        _playEntrance = !silent;
       });
+
+      if (!silent) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _playEntrance = false);
+      } else {
+        // đợi list dựng xong rồi mới để RefreshIndicator đóng
+        await WidgetsBinding.instance.endOfFrame;
+      }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-        _dangTai = false;
-      });
+      if (_attendanceList.isEmpty) {
+        setState(() {
+          _error = e.toString();
+          _isLoading = false;
+        });
+      } else {
+        // đã có dữ liệu → giữ list cũ, chỉ báo lỗi nhẹ
+        if (_isLoading) setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Không thể làm mới dữ liệu'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      _dangTai = false;
     }
   }
 
@@ -286,30 +323,34 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     }
   }
 
-  Color _getCardColor(BuildContext context, dynamic item) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    if (_isIncompleteCheckout(item)) {
-      return isDark
-          ? Colors.amber.shade200.withValues(alpha: 0.2)
-          : Colors.amber.shade50;
-    }
-    return isDark ? Colors.grey.shade800.withValues(alpha: 0.8) : Colors.white;
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final hasActiveFilters = _selectedMaMon != null ||
         _dateFilterType == 'single' ||
         _dateFilterType == 'range' ||
         (_soNgay != 14 && _soNgay != null);
 
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('Lịch sử điểm danh',
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        centerTitle: false, // tiêu đề nằm bên trái
+        titleSpacing: 16,   // khoảng cách từ mép trái (tùy chỉnh)
+        title: Text(
+          'Lịch sử điểm danh',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+            color: isDark ? Colors.white : Colors.black87,
+          ),
+        ),
         elevation: 0,
+        iconTheme: IconThemeData(
+          color: isDark ? Colors.white : Colors.black87,
+        ),
         actions: [
           Stack(
             children: [
@@ -334,7 +375,7 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _fetchAttendanceHistory,
+            onPressed: () => _fetchAttendanceHistory(),
           ),
         ],
       ),
@@ -343,36 +384,32 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   }
 
   Widget _buildBody(bool isDark) {
-    if (_isLoading) {
+    final hasData = _attendanceList.isNotEmpty;
+
+    // Skeleton chỉ hiện khi CHƯA có gì để hiển thị (lần tải đầu hoặc lọc ra rỗng)
+    if (_isLoading && (!hasData || _filteredList.isEmpty)) {
       return _buildTabSkeleton(isDark);
     }
 
-    if (_error != null) {
+    if (_error != null && !hasData) {
+      final theme = Theme.of(context);
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.error_outline, size: 64, color: Colors.red.shade400),
+              Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
               const SizedBox(height: 16),
               Text(
                 _error!,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: isDark ? Colors.white70 : Colors.black87,
-                ),
                 textAlign: TextAlign.center,
+                style: TextStyle(color: theme.colorScheme.error, fontSize: 16),
               ),
               const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: _fetchAttendanceHistory,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Thử lại'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6366F1),
-                  foregroundColor: Colors.white,
-                ),
+              ElevatedButton(
+                onPressed: () => _fetchAttendanceHistory(),
+                child: const Text('Thử lại'),
               ),
             ],
           ),
@@ -380,23 +417,31 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       );
     }
 
-    if (_filteredList.isEmpty) {
-      return _buildEmptyState(isDark);
-    }
+    if (_filteredList.isEmpty) return _buildEmptyState(isDark);
 
-    return RefreshIndicator(
-      onRefresh: _fetchAttendanceHistory,
-      color: const Color(0xFF6366F1),
-      child: ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: _filteredList.length,
-        itemBuilder: (context, index) {
-          return _FadeSlide(
-            index: index,
-            child: _buildCompactAttendanceCard(_filteredList[index], isDark),
-          );
-        },
-      ),
+    return Column(
+      children: [
+        // Làm mới bằng nút/bộ lọc: giữ nguyên list, chỉ hiện thanh tiến trình mảnh
+        if (_isLoading) const LinearProgressIndicator(minHeight: 2),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () => _fetchAttendanceHistory(silent: true),
+            color: const Color(0xFF6366F1),
+            child: ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(12),
+              itemCount: _filteredList.length,
+              itemBuilder: (context, index) {
+                return _FadeSlide(
+                  index: index,
+                  animate: _playEntrance && index < 10,
+                  child: _buildCompactAttendanceCard(_filteredList[index], isDark),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -413,16 +458,16 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
           Icon(
             Icons.inbox_outlined,
             size: 64,
-            color: isDark ? Colors.white38 : Colors.grey.shade400,
+            color: Colors.grey.shade400,
           ),
           const SizedBox(height: 16),
           Text(
             _attendanceList.isEmpty
-                ? 'Chưa có lịch sử điểm danh'
+                ? 'Chưa có dữ liệu điểm danh'
                 : 'Không tìm thấy kết quả',
             style: TextStyle(
                 fontSize: 16,
-                color: isDark ? Colors.white70 : Colors.black54),
+                color: isDark ? Colors.grey.shade400 : Colors.grey.shade600),
           ),
           if (_attendanceList.isNotEmpty || hasActiveFilters) ...[
             const SizedBox(height: 16),
@@ -447,95 +492,67 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   }
 
   Widget _buildTabSkeleton(bool isDark) {
-    final base = isDark ? Colors.grey.shade800 : Colors.grey.shade300;
-    final highlight = isDark ? Colors.grey.shade700 : Colors.grey.shade100;
+    final baseColor = isDark ? Colors.grey.shade800 : Colors.grey.shade300;
+    final highlightColor = isDark ? Colors.grey.shade700 : Colors.grey.shade100;
 
-    return Shimmer.fromColors(
-      baseColor: base,
-      highlightColor: highlight,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: 6,
-        itemBuilder: (context, index) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(12),
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: 6,
+      itemBuilder: (context, index) {
+        return Shimmer.fromColors(
+          baseColor: baseColor,
+          highlightColor: highlightColor,
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
-              color: isDark
-                  ? Colors.grey.shade800.withOpacity(0.8)
-                  : Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: isDark
-                    ? Colors.white.withOpacity(0.1)
-                    : Colors.grey.shade200,
-                width: 1,
-              ),
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(16),
             ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        height: 16,
-                        width: double.infinity,
-                        color: Colors.grey.shade300,
-                        margin: const EdgeInsets.only(bottom: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(width: 200, height: 16, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4))),
+                            const SizedBox(height: 8),
+                            Container(width: 100, height: 12, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4))),
+                          ],
+                        ),
                       ),
-                      Container(
-                        height: 12,
-                        width: 120,
-                        color: Colors.grey.shade200,
-                        margin: const EdgeInsets.only(bottom: 12),
-                      ),
-                      Row(
-                        children: [
-                          _buildSkeletonChip(Colors.green),
-                          const SizedBox(width: 8),
-                          _buildSkeletonChip(Colors.blue),
-                        ],
-                      ),
+                      Container(width: 20, height: 20, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle)),
                     ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  Container(height: 1, color: Colors.white),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Container(width: 120, height: 14, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4))),
+                      const Spacer(),
+                      Container(width: 60, height: 24, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8))),
+                      const SizedBox(width: 8),
+                      Container(width: 60, height: 24, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8))),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildSkeletonChip(Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(width: 12, height: 12, color: Colors.grey.shade300),
-          const SizedBox(width: 6),
-          Container(width: 40, height: 12, color: Colors.grey.shade200),
-        ],
-      ),
-    );
-  }
+  Color _cardColor(bool isDark, bool incomplete) => incomplete
+      ? (isDark ? Colors.amber.shade900.withValues(alpha: 0.15) : Colors.amber.shade50)
+      : (isDark ? const Color(0xFF1E293B) : Colors.white);
 
   Widget _buildCompactAttendanceCard(dynamic item, bool isDark) {
     final theme = Theme.of(context);
@@ -552,8 +569,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (thoiGianBD != null) {
       try {
         final dt = _parseServerDateTime(thoiGianBD);
-        timeIn = DateFormat('HH:mm').format(dt);
-        dateStr = DateFormat('dd/MM/yyyy').format(dt);
+        timeIn = _fmtHm.format(dt);
+        dateStr = _fmtDmy.format(dt);
       } catch (e) {}
     }
 
@@ -561,31 +578,23 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       try {
         final dt = _parseServerDateTime(thoiGianKT);
         // Mốc rỗng (01/01/1900) → chip gọn hiển thị 00:00
-        timeOut =
-        _laThoiGianRong(dt) ? '00:00' : DateFormat('HH:mm').format(dt);
+        timeOut = _laThoiGianRong(dt) ? '00:00' : _fmtHm.format(dt);
       } catch (e) {}
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: _getCardColor(context, item),
-        borderRadius: BorderRadius.circular(12),
+        color: _cardColor(isDark, isIncomplete),
+        borderRadius: BorderRadius.circular(16),
         border: isIncomplete
             ? Border.all(color: Colors.amber.shade600, width: 1.5)
-            : Border.all(
-          color: isDark
-              ? Colors.white.withOpacity(0.1)
-              : Colors.grey.shade200,
-          width: 1,
-        ),
+            : null,
         boxShadow: [
           BoxShadow(
-            color: isDark
-                ? Colors.black.withOpacity(0.2)
-                : Colors.grey.withOpacity(0.1),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
+            color: isDark ? Colors.black.withValues(alpha: 0.2) : Colors.grey.withValues(alpha: 0.1),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
@@ -593,15 +602,16 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         color: Colors.transparent,
         child: InkWell(
           onTap: () => _showAttendanceDetail(item),
-          borderRadius: BorderRadius.circular(12),
-          splashColor: theme.primaryColor.withOpacity(0.15),
-          highlightColor: theme.primaryColor.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(16),
+          splashColor: theme.primaryColor.withValues(alpha: 0.15),
+          highlightColor: theme.primaryColor.withValues(alpha: 0.05),
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       child: Column(
@@ -610,19 +620,19 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                           Text(
                             tenMon,
                             style: TextStyle(
-                              fontSize: 15,
+                              fontSize: 16,
                               fontWeight: FontWeight.w600,
-                              color: isDark ? Colors.white : Colors.black87,
+                              color: isDark ? Colors.white : const Color(0xFF0F172A),
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(height: 4),
                           Text(
                             maMon,
                             style: TextStyle(
                               fontSize: 12,
-                              color: isDark ? Colors.white60 : Colors.black54,
+                              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
                             ),
                           ),
                         ],
@@ -631,30 +641,30 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                     const SizedBox(width: 8),
                     Icon(
                       Icons.chevron_right,
-                      color: isDark ? Colors.white38 : Colors.grey.shade400,
+                      color: isDark ? Colors.grey.shade600 : Colors.grey.shade400,
                       size: 20,
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
                 Divider(
                   height: 1,
-                  color: isDark ? Colors.white10 : Colors.grey.shade300,
+                  color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Icon(
                       Icons.calendar_today,
                       size: 14,
-                      color: isDark ? Colors.white60 : Colors.black54,
+                      color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
                     ),
                     const SizedBox(width: 6),
                     Text(
                       dateStr,
                       style: TextStyle(
                         fontSize: 13,
-                        color: isDark ? Colors.white70 : Colors.black87,
+                        color: isDark ? Colors.grey.shade300 : Colors.grey.shade800,
                       ),
                     ),
                     const Spacer(),
@@ -695,12 +705,8 @@ class AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(isDark ? 0.2 : 0.1),
+        color: color.withValues(alpha: isDark ? 0.2 : 0.1),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: color.withOpacity(0.3),
-          width: 1,
-        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -854,7 +860,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
   BoxDecoration _optionDecoration(bool selected, bool isDark) {
     return BoxDecoration(
       color: selected
-          ? const Color(0xFF6366F1).withOpacity(0.1)
+          ? const Color(0xFF6366F1).withValues(alpha: 0.1)
           : Colors.transparent,
       border: Border.all(
         color: selected
@@ -872,7 +878,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
 
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? Colors.grey.shade900 : Colors.white,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       padding: EdgeInsets.only(
@@ -901,7 +907,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
-                      color: isDark ? Colors.white : Colors.black87,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -919,9 +925,10 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                   Container(
                     decoration: BoxDecoration(
                       border: Border.all(
-                        color: isDark ? Colors.white24 : Colors.grey.shade300,
+                        color: isDark ? Colors.grey.shade800 : Colors.grey.shade300,
                       ),
                       borderRadius: BorderRadius.circular(12),
+                      color: isDark ? const Color(0xFF0F172A) : Colors.grey.shade100,
                     ),
                     child: DropdownButtonHideUnderline(
                       child: DropdownButton<String?>(
@@ -931,7 +938,7 @@ class _FilterBottomSheetState extends State<_FilterBottomSheet> {
                         const EdgeInsets.symmetric(horizontal: 16),
                         borderRadius: BorderRadius.circular(12),
                         dropdownColor:
-                        isDark ? Colors.grey.shade800 : Colors.white,
+                        isDark ? const Color(0xFF1E293B) : Colors.white,
                         hint: Text(
                           'Tất cả môn học',
                           style: TextStyle(
@@ -1292,7 +1299,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
       builder: (context, scrollController) {
         return Container(
           decoration: BoxDecoration(
-            color: isDark ? Colors.grey.shade900 : Colors.white,
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
             borderRadius:
             const BorderRadius.vertical(top: Radius.circular(20)),
           ),
@@ -1316,7 +1323,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(
-                      color: isDark ? Colors.white12 : Colors.grey.shade200,
+                      color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
                     ),
                   ),
                 ),
@@ -1328,7 +1335,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white : Colors.black87,
+                          color: isDark ? Colors.white : const Color(0xFF0F172A),
                         ),
                       ),
                     ),
@@ -1352,7 +1359,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
                         padding: const EdgeInsets.all(16),
                         margin: const EdgeInsets.only(bottom: 20),
                         decoration: BoxDecoration(
-                          color: Colors.amber.shade100.withOpacity(0.3),
+                          color: Colors.amber.shade100.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
                             color: Colors.amber.shade700,
@@ -1478,13 +1485,13 @@ class _AttendanceDetailSheet extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isDark
-            ? Colors.grey.shade800.withOpacity(0.5)
-            : Colors.grey.shade50,
+            ? const Color(0xFF1E293B)
+            : Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: isIncomplete
-              ? Colors.amber.withOpacity(0.4)
-              : (isDark ? Colors.white10 : Colors.grey.shade200),
+              ? Colors.amber.withValues(alpha: 0.4)
+              : (isDark ? Colors.grey.shade800 : Colors.grey.shade200),
         ),
       ),
       child: Row(
@@ -1493,7 +1500,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
+              color: color.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, color: color, size: 22),
@@ -1661,7 +1668,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
       height: 52,
       decoration: BoxDecoration(
         color: isDark
-            ? Colors.white.withOpacity(0.05)
+            ? Colors.white.withValues(alpha: 0.05)
             : Colors.grey.shade200,
         borderRadius: BorderRadius.circular(8),
       ),
@@ -1680,10 +1687,10 @@ class _AttendanceDetailSheet extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color:
-        isDark ? Colors.grey.shade800.withOpacity(0.5) : Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(12),
+        isDark ? const Color(0xFF0F172A) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isDark ? Colors.white.withOpacity(0.1) : Colors.grey.shade200,
+          color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
         ),
       ),
       child: Column(
@@ -1694,7 +1701,7 @@ class _AttendanceDetailSheet extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF6366F1).withOpacity(0.1),
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: const Icon(
@@ -1764,15 +1771,20 @@ class _AttendanceDetailSheet extends StatelessWidget {
 /// Mờ dần + trượt lên khi dòng lịch sử xuất hiện
 class _FadeSlide extends StatelessWidget {
   final int index;
+  final bool animate;
   final Widget child;
-  const _FadeSlide({required this.index, required this.child});
+  const _FadeSlide({required this.index, required this.animate, required this.child});
 
   @override
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 250 + (index * 60).clamp(0, 400)),
+      // animate = false → bắt đầu ở 1, thời lượng 0: hiện ngay, không animate khi cuộn lại
+      tween: Tween(begin: animate ? 0 : 1, end: 1),
+      duration: animate
+          ? Duration(milliseconds: 250 + (index * 40).clamp(0, 200))
+          : Duration.zero,
       curve: Curves.easeOut,
+      child: child,
       builder: (context, value, child) => Opacity(
         opacity: value,
         child: Transform.translate(
@@ -1780,7 +1792,6 @@ class _FadeSlide extends StatelessWidget {
           child: child,
         ),
       ),
-      child: child,
     );
   }
 }

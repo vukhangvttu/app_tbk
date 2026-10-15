@@ -1,18 +1,25 @@
-import 'package:easy_localization/easy_localization.dart';
 import 'dart:async';
 import 'dart:io';
+
+import 'package:app_tbk/config/academic_config.dart';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/models/class_schedule.dart';
 import 'package:app_tbk/services/notification_service.dart';
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:table_calendar/table_calendar.dart';
 
-import 'package:app_tbk/config/academic_config.dart';
 import '../../../services/api_service.dart';
 import '../../auth/services/auth_service.dart';
 import '../../auth/services/post_login_initializer.dart';
+
+/// Chế độ xem lịch:
+/// - ngay: lịch ngày đang chọn
+/// - tuan: cả tuần theo lịch (khi calendar ở dạng tuần)
+/// - tuanHoc: tuần học theo học kỳ (chọn bằng dropdown)
+enum _CheDo { ngay, tuan, tuanHoc }
 
 class ScheduleScreen extends StatefulWidget {
   const ScheduleScreen({Key? key}) : super(key: key);
@@ -22,40 +29,75 @@ class ScheduleScreen extends StatefulWidget {
 }
 
 class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProviderStateMixin {
+  static const _soTuan = 25;
+  static const _loiMang = 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.';
+  static const _thuVi = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+
+  late final TabController _tabController;
+
+  // Dữ liệu
   List<LopHoc> lichHoc = [];
   List<LopHoc> lichThi = [];
-  bool dangTai = false;
+  Map<DateTime, List<LopHoc>> suKien = {};
+
+  // Trạng thái tải
+  bool dangTai = false; // dùng cho UI
+  bool _fetching = false; // chặn gọi trùng, không gây rebuild
+  bool _daTai = false; // đã có dữ liệu ít nhất 1 lần
   String loi = '';
+  int demNguoc = 0;
+
+  // Trạng thái hiển thị
   bool laHoc = true;
-  bool laTuan = false;
-  bool laTuanHoc = false;
+  _CheDo cheDo = _CheDo.ngay;
+  CalendarFormat dinhDangLich = CalendarFormat.week;
   DateTime ngayTapTrung = DateTime.now();
   DateTime? ngayDuocChon;
-  CalendarFormat dinhDangLich = CalendarFormat.week;
-  Map<DateTime, List<LopHoc>> suKien = {};
   int tuanHocHienTai = 1;
   int tuanDuocChon = 1;
-  List<int> danhSachTuan = List.generate(25, (i) => i + 1);
 
-  DateTime get ngayBatDauHocKy => AcademicConfig.ngayBatDauHocKy;
-  DateTime get ngayDau => DateTime(ngayBatDauHocKy.year, 1, 1); // Đầu năm của học kỳ
-  DateTime get ngayCuoi => DateTime(ngayBatDauHocKy.year + 1, 12, 31); // Cuối năm sau
+  // ───────────── Ngày tháng ─────────────
 
-  late TabController _tabController;
+  static DateTime _ngay(DateTime d) => DateTime(d.year, d.month, d.day);
+  static DateTime _congNgay(DateTime d, int n) => DateTime(d.year, d.month, d.day + n);
+  static DateTime _dauTuan(DateTime d) => DateTime(d.year, d.month, d.day - (d.weekday - 1));
+
+  DateTime get _ngayDau => DateTime(AcademicConfig.ngayBatDauHocKy.year, 1, 1);
+  DateTime get _ngayCuoi => DateTime(AcademicConfig.ngayBatDauHocKy.year + 1, 12, 31);
+
+  /// Thứ Hai đầu tiên của học kỳ (đầu Tuần 1)
+  DateTime get _thuHaiDauTien => _dauTuan(AcademicConfig.ngayBatDauHocKy);
+
+  DateTime _dauTuanHoc(int tuan) => _congNgay(_thuHaiDauTien, (tuan - 1) * 7);
+
+  void _tinhTuanHienTai() {
+    final soNgay = _ngay(DateTime.now()).difference(_thuHaiDauTien).inDays;
+    tuanHocHienTai = ((soNgay / 7).floor() + 1).clamp(1, _soTuan).toInt();
+  }
+
+  DateTime _phanTichNgay(String? s) {
+    if (s == null || s.isEmpty) return DateTime.now();
+    try {
+      return _ngay(DateTime.parse(s).toLocal());
+    } catch (e) {
+      debugPrint('Lỗi parse ngày: $e');
+      return DateTime.now();
+    }
+  }
+
+  // ───────────── Vòng đời ─────────────
 
   @override
   void initState() {
     super.initState();
-    // ✅ Đảm bảo services đã init (nếu chưa thì init)
+    _tabController = TabController(length: 2, vsync: this);
+    ngayDuocChon = ngayTapTrung;
+    _tinhTuanHienTai();
+    tuanDuocChon = tuanHocHienTai;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       PostLoginInitializer.ensureInitialized(context);
     });
-    _tabController = TabController(length: 2, vsync: this);
-    ngayTapTrung = DateTime.now();
-    ngayDuocChon = ngayTapTrung;
-    tinhTuanHocHienTai();
-    tuanDuocChon = tuanHocHienTai;
-    taiDuLieu(refresh: false);
+    taiDuLieu();
   }
 
   @override
@@ -64,377 +106,226 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     super.dispose();
   }
 
-  /// Lấy ngày Thứ Hai đầu tiên của học kỳ (Tuần 1)
-  DateTime _layThuHaiDauTienHocKy() {
-    final clean = DateTime(ngayBatDauHocKy.year, ngayBatDauHocKy.month, ngayBatDauHocKy.day);
-    return clean.subtract(Duration(days: clean.weekday - 1));
-  }
+  // ───────────── Tải dữ liệu ─────────────
 
-  void tinhTuanHocHienTai() {
-    final now = DateTime.now();
-    final cleanNow = DateTime(now.year, now.month, now.day);
-    final thuHaiDauTien = _layThuHaiDauTienHocKy();
-    final difference = cleanNow.difference(thuHaiDauTien).inDays;
+  LopHoc _taoLop(dynamic json) => LopHoc(
+    tenMon: json['TENMON'] ?? '',
+    thu: json['THU'] ?? 2,
+    gioBd: json['GIOBD'] ?? '',
+    gioKt: json['GIOKT'] ?? '',
+    hoTen: json['HOTEN'] ?? '',
+    tenPhong: json['TENPHONG'] ?? '',
+    maNhom: json['manhom'] ?? 0,
+    soTiet: json['SOTIET'] ?? 0,
+    phanBo: json['PHANBO'] ?? '',
+    ngayBd: _phanTichNgay(json['NGAYBD']),
+    ngayKt: _phanTichNgay(json['NGAYKT']),
+    nhomThi: json['NHOMTHI'] ?? false,
+    thoiGianGiaiLao: json['THOIGIAN_GIAILAO'] ?? '',
+    noiDungBaiHoc: (json['NOIDUNG_BAIHOC'] as String?)?.trim() ?? '',
+  );
 
-    // Mỗi tuần 7 ngày, quy chuẩn bắt đầu từ Thứ Hai
-    tuanHocHienTai = (difference / 7).floor() + 1;
-
-    // Giới hạn biên
-    if (tuanHocHienTai < 1) tuanHocHienTai = 1;
-    if (tuanHocHienTai > 25) tuanHocHienTai = 25;
-  }
-
-  void capNhatSuKien() {
+  void _capNhatSuKien() {
     suKien = {};
-    final lichHienTai = layLichHienTai();
-    for (var lop in lichHienTai) {
-      final ngay = DateTime(lop.ngayBd.year, lop.ngayBd.month, lop.ngayBd.day);
-      suKien[ngay] ??= [];
-      suKien[ngay]!.add(lop);
+    for (final lop in laHoc ? lichHoc : lichThi) {
+      suKien.putIfAbsent(_ngay(lop.ngayBd), () => []).add(lop);
     }
   }
 
-  Future<void> taiDuLieu({bool refresh = false}) async {
-    // Nếu không phải refresh và đã có dữ liệu → không tải lại
-    if (!refresh && lichHoc.isNotEmpty && lichThi.isNotEmpty && !dangTai) {
-      return;
+  /// [refresh]: bắt buộc tải lại. [silent]: gọi từ kéo-để-làm-mới →
+  /// không setState lúc bắt đầu (RefreshIndicator đã có spinner riêng) nên không bị giật.
+  Future<void> taiDuLieu({bool refresh = false, bool silent = false}) async {
+    if (!mounted || _fetching || (_daTai && !refresh)) return;
+    _fetching = true;
+    if (!silent) {
+      setState(() {
+        dangTai = true;
+        loi = '';
+      });
     }
-
-    // An toàn: nếu widget đã bị dispose → không làm gì
-    if (!mounted) return;
-
-    setState(() {
-      dangTai = true;
-      loi = '';
-    });
 
     try {
-      // Tải thông tin học kỳ mới nhất từ server
-      await AcademicConfig.fetchAcademicTerm();
-      if (mounted) {
-        setState(() {
-          tinhTuanHocHienTai();
-        });
-      }
+      // Giữ tối thiểu 400ms khi kéo làm mới để animation thả tay lắng xuống
+      final minWait = silent ? Future<void>.delayed(const Duration(milliseconds: 400)) : Future<void>.value();
 
-      final idSinhVien = (await AuthService.getIdSinhVien())?.toString();
-      if (idSinhVien == null || idSinhVien.isEmpty) {
-        throw Exception('Không tìm thấy thông tin sinh viên');
-      }
+      await AcademicConfig.fetchAcademicTerm();
+      final id = (await AuthService.getIdSinhVien())?.toString();
+      if (id == null || id.isEmpty) throw Exception('Không tìm thấy thông tin sinh viên');
 
       final List<dynamic> data = await ApiService.getThoiKhoaBieu(
-        idSinhVien: idSinhVien, // Dùng biến thật, không hardcode
+        idSinhVien: id,
         hocKy: AcademicConfig.hocKy,
         namHoc: AcademicConfig.namHoc,
       );
+      final tatCa = data.map(_taoLop).toList();
 
-      final List<LopHoc> tatCa = data.map((json) {
-        return LopHoc(
-          tenMon: json['TENMON'] ?? '',
-          thu: json['THU'] ?? 2,
-          gioBd: json['GIOBD'] ?? '',
-          gioKt: json['GIOKT'] ?? '',
-          hoTen: json['HOTEN'] ?? '',
-          tenPhong: json['TENPHONG'] ?? '',
-          maNhom: json['manhom'] ?? 0,
-          soTiet: json['SOTIET'] ?? 0,
-          phanBo: json['PHANBO'] ?? '',
-          ngayBd: _phanTichNgay(json['NGAYBD']),
-          ngayKt: _phanTichNgay(json['NGAYKT']),
-          nhomThi: json['NHOMTHI'] ?? false,
-          thoiGianGiaiLao: json['THOIGIAN_GIAILAO'] ?? '',
-        );
-      }).toList();
-
-      // 🔴 QUAN TRỌNG: Kiểm tra mounted trước khi setState sau await
+      await minWait;
       if (!mounted) return;
 
+      final lanDau = !_daTai;
       setState(() {
         lichHoc = tatCa;
-        lichThi = tatCa.where((lop) => lop.nhomThi).toList();
-        capNhatSuKien();
-        dangTai = false;
-        ngayTapTrung = DateTime.now();
-        ngayDuocChon = ngayTapTrung;
-      });
-
-      // TODO: bật khi muốn nhắc lịch học/thi hằng ngày → _xuLyThongBao();
-
-    } on UnauthorizedException catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        loi = 'Phiên đăng nhập đã hết hạn';
-        dangTai = false;
-      });
-
-      await Future.delayed(const Duration(seconds: 1));
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/login');
-      }
-
-    } on TimeoutException catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        loi = 'Máy chủ phản hồi quá lâu. Vui lòng thử lại sau.';
-        dangTai = false;
-      });
-
-      batDauDemNguocTaiLai();
-
-    } on SocketException catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        loi = 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.';
-        dangTai = false;
-      });
-
-    } catch (e) {
-      if (!mounted) return;
-
-      String errorMsg = e.toString();
-
-      String finalMessage;
-      if (e is NoInternetException ||
-          errorMsg.contains('Không có kết nối') ||
-          errorMsg.contains('SocketException') ||
-          errorMsg.contains('ClientException')) {
-        finalMessage = 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.';
-      } else if (errorMsg.contains('Không tìm thấy token') || errorMsg.contains('hết hạn')) {
-        finalMessage = 'Vui lòng đăng nhập lại';
-      } else if (errorMsg.contains('401')) {
-        finalMessage = 'Không có quyền truy cập';
-      } else if (errorMsg.contains('404')) {
-        finalMessage = 'Không tìm thấy dữ liệu';
-      } else if (errorMsg.contains('500')) {
-        finalMessage = 'Lỗi máy chủ';
-      } else {
-        finalMessage = errorMsg.replaceAll('Exception: ', '');
-      }
-
-      setState(() {
-        loi = finalMessage;
-        dangTai = false;
-      });
-
-      // Chỉ navigate nếu là lỗi token hết hạn
-      if (errorMsg.contains('Không tìm thấy token') ||
-          errorMsg.contains('hết hạn') ||
-          errorMsg.contains('401')) {
-        await Future.delayed(const Duration(seconds: 1));
-        if (mounted) {
-          Navigator.of(context).pushReplacementNamed('/login');
+        lichThi = tatCa.where((l) => l.nhomThi).toList();
+        _tinhTuanHienTai();
+        // Chỉ đặt lại ngày/tuần ở lần tải đầu, tránh nhảy vị trí khi làm mới
+        if (lanDau) {
+          tuanDuocChon = tuanHocHienTai;
+          ngayTapTrung = DateTime.now();
+          ngayDuocChon = ngayTapTrung;
         }
-      }
-    }
-  }
-
-  // Hàm helper phân tích ngày
-  DateTime _phanTichNgay(String? ngayStr) {
-    if (ngayStr == null || ngayStr.isEmpty) {
-      return DateTime.now();
-    }
-
-    try {
-      final utcDate = DateTime.parse(ngayStr);
-      final localDate = utcDate.toLocal();
-      return DateTime(localDate.year, localDate.month, localDate.day);
+        _capNhatSuKien();
+        dangTai = false;
+        _daTai = true;
+        loi = '';
+      });
+      if (silent) await WidgetsBinding.instance.endOfFrame;
     } catch (e) {
-      debugPrint('Lỗi parse ngày: $e');
-      return DateTime.now();
+      await _xuLyLoi(e);
+    } finally {
+      _fetching = false;
     }
   }
 
-  // Hàm tải lại (dùng cho Pull-to-Refresh)
-  Future<void> taiLaiDuLieu() async {
-    setState(() {
-      lichHoc.clear();
-      lichThi.clear();
-    });
-    await taiDuLieu(refresh: false);
+  Future<void> _xuLyLoi(Object e) async {
+    final msg = e.toString();
+
+    if (e is UnauthorizedException) {
+      await _baoLoi('Phiên đăng nhập đã hết hạn');
+      return _veDangNhap();
+    }
+    if (e is TimeoutException) {
+      await _baoLoi('Máy chủ phản hồi quá lâu. Vui lòng thử lại sau.');
+      if (!_daTai) _demNguocTaiLai();
+      return;
+    }
+    if (e is SocketException ||
+        e is NoInternetException ||
+        msg.contains('Không có kết nối') ||
+        msg.contains('SocketException') ||
+        msg.contains('ClientException')) {
+      return _baoLoi(_loiMang);
+    }
+    if (msg.contains('Không tìm thấy token') || msg.contains('hết hạn')) {
+      await _baoLoi('Vui lòng đăng nhập lại');
+      return _veDangNhap();
+    }
+    if (msg.contains('401')) {
+      await _baoLoi('Không có quyền truy cập');
+      return _veDangNhap();
+    }
+    if (msg.contains('404')) return _baoLoi('Không tìm thấy dữ liệu');
+    if (msg.contains('500')) return _baoLoi('Lỗi máy chủ');
+    return _baoLoi(msg.replaceAll('Exception: ', ''));
   }
 
+  /// Đã có dữ liệu → giữ nguyên danh sách, chỉ báo lỗi bằng snackbar.
+  Future<void> _baoLoi(String msg) async {
+    if (!mounted) return;
+    setState(() {
+      loi = _daTai ? '' : msg;
+      dangTai = false;
+    });
+    if (_daTai) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+      );
+    }
+  }
+
+  Future<void> _veDangNhap() async {
+    await Future.delayed(const Duration(seconds: 1));
+    if (mounted) Navigator.of(context).pushReplacementNamed('/login');
+  }
+
+  Future<void> _demNguocTaiLai() async {
+    for (var i = 5; i > 0; i--) {
+      if (!mounted) return;
+      setState(() => demNguoc = i);
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    if (!mounted) return;
+    setState(() => demNguoc = 0);
+    await taiDuLieu();
+  }
+
+  // Đang tắt (xem TODO cũ): bật khi muốn nhắc lịch học/thi hằng ngày.
+  // ignore: unused_element
   Future<void> _xuLyThongBao() async {
-    // Dùng id sinh viên thật, không hardcode
-    final idSv = await AuthService.getIdSinhVien();
-    final idSinhVien = int.tryParse(idSv.toString()) ?? 0;
+    final idSinhVien = int.tryParse((await AuthService.getIdSinhVien()).toString()) ?? 0;
     if (idSinhVien == 0) return;
 
     final homNay = DateTime.now();
-    final coLichHocHomNay = lichHoc.any((lop) {
-      return lop.ngayBd.isBefore(homNay.add(const Duration(days: 1))) &&
-          lop.ngayKt.isAfter(homNay.subtract(const Duration(days: 1))) &&
-          !lop.nhomThi;
-    });
-    final coLichThiHomNay = lichThi.any((lop) {
-      return lop.ngayBd.isBefore(homNay.add(const Duration(days: 1))) &&
-          lop.ngayKt.isAfter(homNay.subtract(const Duration(days: 1))) &&
-          lop.nhomThi;
-    });
+    final ngayStr = '${homNay.day}/${homNay.month}/${homNay.year}';
+    bool coLich(List<LopHoc> ds, bool thi) => ds.any((l) =>
+    l.ngayBd.isBefore(homNay.add(const Duration(days: 1))) &&
+        l.ngayKt.isAfter(homNay.subtract(const Duration(days: 1))) &&
+        l.nhomThi == thi);
 
-    if (coLichHocHomNay || coLichThiHomNay) {
-      if (coLichHocHomNay) {
-        final noiDungHoc = 'Nhắc nhở: Bạn có lịch học hôm nay (${homNay.day}/${homNay.month}/${homNay.year}).';
-        await NotificationService().showAndSaveNotification(
-          idSinhVien: idSinhVien,
-          title: '📘 Lịch học hôm nay',
-          body: noiDungHoc,
-          loaiLich: 'LICH_HOC',
-        );
-        await NotificationService().scheduleDailyNotification(
-          id: 1,
-          title: '📘 Lịch học hôm nay',
-          body: noiDungHoc,
-          loaiLich: 'LICH_HOC',
-          hour: 8,
-          minute: 55,
-        );
-      }
-      if (coLichThiHomNay) {
-        final noiDungThi = 'Nhắc nhở: Bạn có lịch thi hôm nay (${homNay.day}/${homNay.month}/${homNay.year}).';
-        await NotificationService().showAndSaveNotification(
-          idSinhVien: idSinhVien,
-          title: '🧾 Lịch thi hôm nay',
-          body: noiDungThi,
-          loaiLich: 'LICH_THI',
-        );
-        await NotificationService().scheduleDailyNotification(
-          id: 2,
-          title: '🧾 Lịch thi hôm nay',
-          body: noiDungThi,
-          loaiLich: 'LICH_THI',
-          hour: 8,
-          minute: 55,
-        );
-      }
+    Future<void> nhac(int id, String tieuDe, String noiDung, String loai) async {
+      final dichVu = NotificationService();
+      await dichVu.showAndSaveNotification(
+          idSinhVien: idSinhVien, title: tieuDe, body: noiDung, loaiLich: loai);
+      await dichVu.scheduleDailyNotification(
+          id: id, title: tieuDe, body: noiDung, loaiLich: loai, hour: 8, minute: 55);
+    }
+
+    if (coLich(lichHoc, false)) {
+      await nhac(1, '📘 Lịch học hôm nay', 'Nhắc nhở: Bạn có lịch học hôm nay ($ngayStr).', 'LICH_HOC');
+    }
+    if (coLich(lichThi, true)) {
+      await nhac(2, '🧾 Lịch thi hôm nay', 'Nhắc nhở: Bạn có lịch thi hôm nay ($ngayStr).', 'LICH_THI');
     }
   }
 
-  String layLoi(String loi) {
-    if (loi.contains('timeout') || loi.contains('timed out')) {
-      return 'Không thể kết nối tới server.';
-    } else {
-      return 'Error: ${loi.length > 200 ? loi.substring(0, 200) + "..." : loi}';
+  // ───────────── Lọc & nhóm lịch ─────────────
+
+  List<LopHoc> _trongTuan(List<LopHoc> nguon, DateTime dau) {
+    final cuoi = _congNgay(dau, 6);
+    return nguon.where((l) {
+      final d = _ngay(l.ngayBd);
+      return !d.isBefore(dau) && !d.isAfter(cuoi);
+    }).toList();
+  }
+
+  List<LopHoc> _layLichHienThi() {
+    if (!laHoc) return lichThi; // lịch thi: hiển thị tất cả
+    return switch (cheDo) {
+      _CheDo.ngay => () {
+        final n = _ngay(ngayDuocChon ?? ngayTapTrung);
+        return lichHoc.where((l) => _ngay(l.ngayBd) == n).toList();
+      }(),
+      _CheDo.tuan => _trongTuan(lichHoc, _dauTuan(ngayTapTrung)),
+      _CheDo.tuanHoc => _trongTuan(lichHoc, _dauTuanHoc(tuanDuocChon)),
+    };
+  }
+
+  List<MapEntry<DateTime, Map<String, List<LopHoc>>>> _nhomTheoNgay(List<LopHoc> ds) {
+    final nhom = <DateTime, Map<String, List<LopHoc>>>{};
+    for (final lop in ds) {
+      final theoBuoi = nhom.putIfAbsent(_ngay(lop.ngayBd), () => {});
+      (theoBuoi[lop.buoiHoc] ??= []).add(lop);
     }
+    return nhom.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
   }
 
-  int demNguoc = 0;
-  Future<void> batDauDemNguocTaiLai() async {
-    setState(() {
-      demNguoc = 5;
-    });
-
-    for (int i = 5; i > 0; i--) {
-      if (!mounted) return;
-      setState(() {
-        demNguoc = i;
-      });
-      await Future.delayed(const Duration(seconds: 1));
-    }
-
-    if (!mounted) return;
-    setState(() {
-      demNguoc = 0;
-    });
-
-    await taiDuLieu(refresh: false);
-  }
-
-  List<LopHoc> layLichHienTai() {
-    return laHoc ? lichHoc : lichThi;
-  }
-
-  List<LopHoc> layLichNgay(DateTime ngay) {
-    final ngayNormalized = DateTime.utc(ngay.year, ngay.month, ngay.day);
-    return laHoc
-        ? layLichHienTai().where((s) {
-      final ngayBdNormalized = DateTime.utc(s.ngayBd.year, s.ngayBd.month, s.ngayBd.day);
-      return ngayBdNormalized.isAtSameMomentAs(ngayNormalized);
-    }).toList()
-        : layLichHienTai();
-  }
-
-  List<LopHoc> layLichLoc() {
-    DateTime tuanBatDau = DateTime.utc(ngayTapTrung.year, ngayTapTrung.month, ngayTapTrung.day)
-        .subtract(Duration(days: ngayTapTrung.weekday - 1));
-    DateTime tuanKetThuc = tuanBatDau.add(const Duration(days: 6));
-    return laHoc
-        ? layLichHienTai().where((s) {
-      final ngayBdNormalized = DateTime.utc(s.ngayBd.year, s.ngayBd.month, s.ngayBd.day);
-      return !ngayBdNormalized.isBefore(tuanBatDau) && !ngayBdNormalized.isAfter(tuanKetThuc);
-    }).toList()
-        : layLichHienTai();
-  }
-
-  List<LopHoc> layLichTuanHoc(int tuanSo) {
-    final thuHaiDauTien = _layThuHaiDauTienHocKy();
-    final tuanBatDau = thuHaiDauTien.add(Duration(days: (tuanSo - 1) * 7));
-    final tuanKetThuc = tuanBatDau.add(const Duration(days: 6));
-
-    final startUtc = DateTime.utc(tuanBatDau.year, tuanBatDau.month, tuanBatDau.day);
-    final endUtc = DateTime.utc(tuanKetThuc.year, tuanKetThuc.month, tuanKetThuc.day);
-
-    return laHoc
-        ? layLichHienTai().where((s) {
-      final ngayBdNormalized = DateTime.utc(s.ngayBd.year, s.ngayBd.month, s.ngayBd.day);
-      return !ngayBdNormalized.isBefore(startUtc) && !ngayBdNormalized.isAfter(endUtc);
-    }).toList()
-        : layLichHienTai();
-  }
-
-  /// Nhóm lịch theo ngày, sắp xếp bằng DateTime thật (an toàn mọi locale)
-  Map<String, Map<String, List<LopHoc>>> nhomLichTheoNgay(List<LopHoc> lichLoc) {
-    final locale = context.locale.languageCode;
-    final Map<String, DateTime> ngayThuc = {};
-    final Map<String, Map<String, List<LopHoc>>> nhom = {};
-
-    for (var lop in lichLoc) {
-      final d = DateTime(lop.ngayBd.year, lop.ngayBd.month, lop.ngayBd.day);
-      final khoaNgay = DateFormat('EEEE, dd/MM/yyyy', locale).format(d);
-      ngayThuc[khoaNgay] ??= d;
-      nhom[khoaNgay] ??= {'Sang': [], 'Chieu': [], 'Toi': []};
-      nhom[khoaNgay]![lop.buoiHoc]!.add(lop);
-    }
-
-    final keys = nhom.keys.toList()
-      ..sort((a, b) => ngayThuc[a]!.compareTo(ngayThuc[b]!));
-    return {for (final k in keys) k: nhom[k]!};
-  }
+  // ───────────── UI ─────────────
 
   @override
   Widget build(BuildContext context) {
-    // NOTE: không gọi capNhatSuKien() ở đây — đã gọi trong taiDuLieu() và onTap TabBar
-    final kichThuoc = MediaQuery.of(context).size;
-    final laMayTinhBang = kichThuoc.width > 600;
-    final lichHienTai = laTuanHoc
-        ? layLichTuanHoc(tuanDuocChon)
-        : (laTuan ? layLichLoc() : layLichNgay(ngayDuocChon ?? ngayTapTrung));
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-        title: Text(
-          'home.title_1'.tr(),
-          style: TextStyle(
-            color: Theme.of(context).textTheme.titleLarge?.color,
-            fontWeight: FontWeight.bold,
-            fontSize: 22,
-          ),
-        ),
+        title: Text('home.title_1'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
-            onPressed: () => taiDuLieu(refresh: true),
+            icon: const Icon(Icons.refresh),
             tooltip: 'home.refresh'.tr(),
+            onPressed: () => taiDuLieu(refresh: true),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
         ],
         bottom: TabBar(
           controller: _tabController,
@@ -442,328 +333,245 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
             Tab(text: 'home.schedule'.tr()),
             Tab(text: 'home.exam'.tr()),
           ],
-          labelColor: Theme.of(context).tabBarTheme.labelColor,
-          unselectedLabelColor: Theme.of(context).tabBarTheme.unselectedLabelColor,
-          indicatorColor: Theme.of(context).tabBarTheme.indicatorColor,
-          onTap: (chiSo) {
-            setState(() {
-              laHoc = chiSo == 0;
-              capNhatSuKien();
-            });
-          },
+          onTap: (i) => setState(() {
+            laHoc = i == 0;
+            _capNhatSuKien();
+          }),
         ),
       ),
-      body: dangTai
-          ? Shimmer.fromColors(
-        baseColor: isDarkMode ? Colors.grey[800]! : Colors.grey[300]!,
-        highlightColor: isDarkMode ? Colors.grey[700]! : Colors.grey[100]!,
-        child: _buildTabSkeleton(),
-      )
-          : loi.isNotEmpty
-          ? Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.cloud_off_rounded,
-                size: 80,
-                color: isDarkMode ? Colors.red[200] : Colors.red[300],
-              ),
-              const SizedBox(height: 24),
-              Text(
-                layLoi(loi),
-                textAlign: TextAlign.left,
-                style: TextStyle(
-                  fontSize: 15,
-                  height: 1.5,
-                  color: Theme.of(context).textTheme.bodyMedium?.color,
-                ),
-              ),
-              const SizedBox(height: 32),
-              demNguoc > 0
-                  ? Text(
-                'home.retry_in_seconds'.tr(namedArgs: {'seconds': demNguoc.toString()}),
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).textTheme.bodyMedium?.color,
-                ),
-              )
-                  : ElevatedButton.icon(
-                onPressed: () => taiDuLieu(refresh: false),
-                icon: const Icon(Icons.refresh),
-                label: Text('home.retry'.tr()),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).primaryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 12,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      )
-          : Column(
-        children: [
-          if (laHoc && !laTuanHoc) xayDungLich(),
-          if (laTuanHoc) _xayDungTuanHoc(),
-          Expanded(
-            child: lichHienTai.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.event_busy_rounded,
-                    size: 80,
-                    color: isDarkMode ? Colors.grey[600] : Colors.grey[400],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'home.no_schedule'.tr(),
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).textTheme.bodyLarge?.color,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ),
-            )
-                : RefreshIndicator(
-              onRefresh: () => taiDuLieu(refresh: true),
-              child: ListView(
-                padding: EdgeInsets.all(laMayTinhBang ? 24 : 16),
-                children: nhomLichTheoNgay(lichHienTai)
-                    .entries
-                    .toList()
-                    .asMap()
-                    .entries
-                    .map((e) => _AnimatedItem(
-                  index: e.key,
-                  child: xayDungTheNgay(
-                      e.value.key, e.value.value, laMayTinhBang),
-                ))
-                    .toList(),
-              ),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: laHoc && !laTuanHoc
-          ? FloatingActionButton(
-        onPressed: () {
-          setState(() {
-            laTuanHoc = true;
-            laTuan = true;
-            ngayTapTrung = _layThuHaiDauTienHocKy().add(Duration(days: (tuanDuocChon - 1) * 7));
-            ngayDuocChon = ngayTapTrung;
-          });
-        },
-        backgroundColor: Theme.of(context).primaryColor,
-        tooltip: 'home.view_by_school_week'.tr(),
-        child: const Icon(
-          Icons.calendar_view_week,
-          color: Colors.white,
-        ),
-      )
-          : laTuanHoc
-          ? FloatingActionButton(
-        onPressed: () {
-          setState(() {
-            laTuanHoc = false;
-            laTuan = false;
-            ngayTapTrung = DateTime.now();
-            ngayDuocChon = ngayTapTrung;
-            capNhatSuKien();
-          });
-        },
-        backgroundColor: Theme.of(context).primaryColor,
-        child: const Icon(Icons.calendar_today, color: Colors.white,),
-        tooltip: 'home.return_to_the_date_calendar'.tr(),
-      )
-          : null,
+      body: _buildBody(theme),
+      floatingActionButton: _buildFab(theme),
     );
   }
 
-  Widget _xayDungTuanHoc() {
-    return Container(
-      color: Theme.of(context).cardColor,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'home.select_week'.tr(),
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).textTheme.titleLarge?.color,
-                ),
-              ),
-              DropdownButton<int>(
-                value: tuanDuocChon,
-                items: danhSachTuan.map((tuan) {
-                  return DropdownMenuItem<int>(
-                    value: tuan,
-                    child: Text(
-                      '${'home.week'.tr()} $tuan',
-                      style: TextStyle(
-                        color: tuan == tuanHocHienTai
-                            ? Colors.green
-                            : (tuan == tuanDuocChon
-                            ? Theme.of(context).colorScheme.primary
-                            : Theme.of(context).colorScheme.onSurface),
-                        fontSize: 16,
-                      ),
-                    ),
-                  );
-                }).toList(),
-                onChanged: (int? newValue) {
-                  if (newValue != null) {
-                    setState(() {
-                      tuanDuocChon = newValue;
-                      ngayTapTrung = _layThuHaiDauTienHocKy().add(Duration(days: (tuanDuocChon - 1) * 7));
-                      capNhatSuKien();
-                    });
-                  }
-                },
-                dropdownColor: Theme.of(context).cardColor,
-                style: TextStyle(
-                  color: Theme.of(context).textTheme.bodyLarge?.color,
-                  fontSize: 16,
-                ),
-                iconEnabledColor: Theme.of(context).iconTheme.color,
-                underline: const SizedBox(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-        ],
+  Widget _buildBody(ThemeData theme) {
+    // Skeleton / màn hình lỗi chỉ khi CHƯA có dữ liệu → làm mới không làm mất danh sách
+    if (!_daTai && dangTai) return _buildSkeleton(theme);
+    if (!_daTai && loi.isNotEmpty) return _buildLoi(theme);
+
+    return Column(
+      children: [
+        if (dangTai) const LinearProgressIndicator(minHeight: 2),
+        if (laHoc && cheDo != _CheDo.tuanHoc) _buildLich(theme),
+        if (laHoc && cheDo == _CheDo.tuanHoc) _buildChonTuan(theme),
+        Expanded(child: _buildDanhSach(theme)),
+      ],
+    );
+  }
+
+  Widget? _buildFab(ThemeData theme) {
+    if (!laHoc) return null;
+    final dangTuanHoc = cheDo == _CheDo.tuanHoc;
+
+    return FloatingActionButton(
+      backgroundColor: theme.primaryColor,
+      tooltip: dangTuanHoc ? 'home.return_to_the_date_calendar'.tr() : 'home.view_by_school_week'.tr(),
+      onPressed: () => setState(() {
+        if (dangTuanHoc) {
+          cheDo = _CheDo.ngay;
+          ngayTapTrung = DateTime.now();
+          ngayDuocChon = ngayTapTrung;
+          _capNhatSuKien();
+        } else {
+          cheDo = _CheDo.tuanHoc;
+          ngayTapTrung = _dauTuanHoc(tuanDuocChon);
+          ngayDuocChon = ngayTapTrung;
+        }
+      }),
+      child: Icon(
+        dangTuanHoc ? Icons.calendar_today : Icons.calendar_view_week,
+        color: Colors.white,
       ),
     );
   }
 
-  Widget xayDungLich() {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+  // ───────────── Lịch (TableCalendar) ─────────────
+
+  Widget _buildLich(ThemeData theme) {
+    final cs = theme.colorScheme;
+    final locale = context.locale.languageCode;
+    final vi = locale == 'vi';
+
     return Container(
-      color: Theme.of(context).cardColor,
+      color: theme.cardColor,
       child: TableCalendar<LopHoc>(
-        firstDay: ngayDau,
-        lastDay: ngayCuoi,
+        firstDay: _ngayDau,
+        lastDay: _ngayCuoi,
         focusedDay: ngayTapTrung,
+        locale: locale,
         startingDayOfWeek: StartingDayOfWeek.monday,
         calendarFormat: dinhDangLich,
-        selectedDayPredicate: (ngay) => isSameDay(ngayDuocChon, ngay),
-        eventLoader: (ngay) => suKien[DateTime(ngay.year, ngay.month, ngay.day)] ?? [],
-        onDaySelected: (chon, tapTrung) {
-          if (!isSameDay(ngayDuocChon, chon)) {
-            setState(() {
-              ngayDuocChon = chon;
-              ngayTapTrung = tapTrung;
-              laTuan = false;
-            });
-          }
+
+        // Chữ trên nút đổi dạng: chỉ còn 2 dạng, Việt hóa
+        availableCalendarFormats: vi
+            ? const {CalendarFormat.month: 'Tháng', CalendarFormat.week: 'Tuần'}
+            : const {CalendarFormat.month: 'Month', CalendarFormat.week: 'Week'},
+
+        // Chỉ vuốt ngang để đổi tháng/tuần; vuốt dọc không còn đổi dạng (tránh xung đột với cuộn list)
+        availableGestures: AvailableGestures.horizontalSwipe,
+        rowHeight: 44,
+        daysOfWeekHeight: 28,
+        pageAnimationDuration: const Duration(milliseconds: 250),
+        pageAnimationCurve: Curves.easeOut,
+        formatAnimationDuration: const Duration(milliseconds: 250),
+        formatAnimationCurve: Curves.easeOut,
+
+        selectedDayPredicate: (d) => isSameDay(ngayDuocChon, d),
+        eventLoader: (d) => suKien[_ngay(d)] ?? const <LopHoc>[],
+
+        onDaySelected: (chon, tapTrung) => setState(() {
+          ngayDuocChon = chon;
+          ngayTapTrung = tapTrung;
+          cheDo = _CheDo.ngay;
+        }),
+        onFormatChanged: (f) => setState(() {
+          dinhDangLich = f;
+          cheDo = f == CalendarFormat.week ? _CheDo.tuan : _CheDo.ngay;
+        }),
+        // Vuốt sang tháng/tuần khác: chỉ rebuild khi đang xem cả tuần,
+        // còn lại chỉ ghi nhớ ngày tập trung → mượt hơn.
+        onPageChanged: (focused) {
+          ngayTapTrung = focused;
+          if (cheDo == _CheDo.tuan) setState(() {});
         },
-        onFormatChanged: (dinhDang) {
-          if (dinhDangLich != dinhDang) {
-            setState(() {
-              dinhDangLich = dinhDang;
-              laTuan = dinhDang == CalendarFormat.week;
-            });
-          }
-        },
-        onPageChanged: (tapTrung) {
-          setState(() {
-            ngayTapTrung = tapTrung;
-            tinhTuanHocHienTai();
-          });
-        },
-        locale: context.locale.toString(),
+
         headerStyle: HeaderStyle(
-          formatButtonVisible: true,
           titleCentered: true,
-          titleTextStyle: Theme.of(context).textTheme.titleLarge!,
-          formatButtonTextStyle: Theme.of(context).textTheme.labelLarge!,
-          titleTextFormatter: (date, locale) {
-            return DateFormat('MM - yyyy', locale).format(date);
-          },
+          headerPadding: const EdgeInsets.symmetric(vertical: 6),
+          titleTextStyle: theme.textTheme.titleMedium!.copyWith(fontWeight: FontWeight.w600),
+          // "Month yyyy" → "Tháng M, yyyy"
+          titleTextFormatter: (date, loc) =>
+          vi ? 'Tháng ${date.month}, ${date.year}' : DateFormat('MMMM yyyy', loc).format(date),
+          formatButtonTextStyle: theme.textTheme.labelMedium!,
+          formatButtonPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          formatButtonDecoration: BoxDecoration(
+            border: Border.all(color: theme.dividerColor),
+            borderRadius: BorderRadius.circular(16),
+          ),
         ),
         calendarStyle: CalendarStyle(
-          todayDecoration: BoxDecoration(
-            color: isDarkMode
-                ? Colors.grey[300]
-                : Theme.of(context).primaryColor.withOpacity(0.4),
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: isDarkMode ? Colors.grey[400]! : Colors.transparent,
-              width: 1,
-            ),
-          ),
-          selectedDecoration: BoxDecoration(
-            color: isDarkMode
-                ? Colors.blue[200]
-                : Theme.of(context).primaryColor,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: isDarkMode ? Colors.blue[300]! : Colors.transparent,
-              width: 1,
-            ),
-          ),
-          todayTextStyle: TextStyle(color: isDarkMode ? Colors.black : Colors.black87),
-          selectedTextStyle: TextStyle(color: isDarkMode ? Colors.black : Colors.white),
-          defaultTextStyle: TextStyle(color: isDarkMode ? Colors.white70 : Colors.black87),
           outsideDaysVisible: false,
+          defaultTextStyle: TextStyle(color: cs.onSurface),
+          weekendTextStyle: TextStyle(color: cs.onSurface.withValues(alpha: 0.7)),
+          todayDecoration: BoxDecoration(color: cs.primary.withValues(alpha: 0.15), shape: BoxShape.circle),
+          todayTextStyle: TextStyle(color: cs.primary, fontWeight: FontWeight.bold),
+          selectedDecoration: BoxDecoration(color: cs.primary, shape: BoxShape.circle),
+          selectedTextStyle: TextStyle(color: cs.onPrimary, fontWeight: FontWeight.bold),
+          markersMaxCount: 1,
+          markerSize: 5,
+          markerDecoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
         ),
-        calendarBuilders: CalendarBuilders(
-          markerBuilder: (context, ngay, suKien) {
-            if (suKien.isNotEmpty) {
-              return Positioned(
-                right: 1,
-                bottom: 1,
-                child: Container(
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.red,
-                  ),
-                  width: 6.0,
-                  height: 6.0,
-                ),
-              );
-            }
-            return null;
-          },
-          dowBuilder: (context, day) {
-            final text = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'][day.weekday - 1];
-            return Center(
-              child: Text(
-                text,
-                style: Theme.of(context).textTheme.labelMedium!.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: day.weekday == DateTime.sunday
-                      ? Colors.redAccent
-                      : null,
-                ),
+        calendarBuilders: vi
+            ? CalendarBuilders<LopHoc>(
+          dowBuilder: (context, day) => Center(
+            child: Text(
+              _thuVi[day.weekday - 1],
+              style: theme.textTheme.labelMedium!.copyWith(
+                fontWeight: FontWeight.bold,
+                color: day.weekday == DateTime.sunday ? Colors.redAccent : null,
               ),
-            );
-          },
-        ),
+            ),
+          ),
+        )
+            : const CalendarBuilders<LopHoc>(),
+      ),
+    );
+  }
+
+  Widget _buildChonTuan(ThemeData theme) {
+    final dau = _dauTuanHoc(tuanDuocChon);
+    final f = DateFormat('dd/MM');
+
+    return Container(
+      color: theme.cardColor,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('home.select_week'.tr(),
+                    style: theme.textTheme.titleMedium!.copyWith(fontWeight: FontWeight.bold)),
+                Text('${f.format(dau)} – ${f.format(_congNgay(dau, 6))}', style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+          DropdownButton<int>(
+            value: tuanDuocChon,
+            underline: const SizedBox(),
+            dropdownColor: theme.cardColor,
+            items: [
+              for (var t = 1; t <= _soTuan; t++)
+                DropdownMenuItem(
+                  value: t,
+                  child: Text(
+                    '${'home.week'.tr()} $t',
+                    style: TextStyle(
+                      color: t == tuanHocHienTai ? Colors.green : null,
+                      fontWeight: t == tuanDuocChon ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() {
+                tuanDuocChon = v;
+                ngayTapTrung = _dauTuanHoc(v);
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ───────────── Danh sách lịch (giao diện gốc) ─────────────
+
+  Widget _buildDanhSach(ThemeData theme) {
+    final nhom = _nhomTheoNgay(_layLichHienThi());
+    final fmt = DateFormat('EEEE, dd/MM/yyyy', context.locale.languageCode);
+    final laMayTinhBang = MediaQuery.sizeOf(context).width > 600;
+    final isDarkMode = theme.brightness == Brightness.dark;
+
+    return RefreshIndicator(
+      onRefresh: () => taiDuLieu(refresh: true, silent: true),
+      child: nhom.isEmpty
+      // Vẫn cuộn được để kéo làm mới khi danh sách rỗng
+          ? ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          SizedBox(height: MediaQuery.sizeOf(context).height * 0.12),
+          Icon(
+            Icons.event_busy_rounded,
+            size: 80,
+            color: isDarkMode ? Colors.grey[600] : Colors.grey[400],
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: Text(
+              'home.no_schedule'.tr(),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: theme.textTheme.bodyLarge?.color,
+              ),
+            ),
+          ),
+        ],
+      )
+          : ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.all(laMayTinhBang ? 24 : 16),
+        itemCount: nhom.length,
+        itemBuilder: (_, i) =>
+            xayDungTheNgay(fmt.format(nhom[i].key), nhom[i].value, laMayTinhBang),
       ),
     );
   }
 
   Widget xayDungTheNgay(String ngay, Map<String, List<LopHoc>> cacBuoi, bool laMayTinhBang) {
-    bool coLop = cacBuoi.values.any((cacLop) => cacLop.isNotEmpty);
-
     return Card(
       margin: EdgeInsets.only(bottom: laMayTinhBang ? 20 : 16),
       color: Theme.of(context).cardColor,
@@ -782,17 +590,14 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                   width: 4,
                   height: 28,
                   decoration: BoxDecoration(
-                    gradient: coLop
-                        ? LinearGradient(
+                    gradient: LinearGradient(
                       colors: [
                         Theme.of(context).primaryColor,
                         Theme.of(context).colorScheme.secondary,
                       ],
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
-                    )
-                        : null,
-                    color: coLop ? null : Theme.of(context).dividerColor,
+                    ),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -807,36 +612,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                     ),
                   ),
                 ),
-                if (!coLop)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceVariant,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      'home.no_schedule'.tr(),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).textTheme.bodySmall?.color,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
               ],
             ),
-            if (coLop) ...[
-              const SizedBox(height: 16),
-              xayDungNhomBuoi(
-                  'home.morning'.tr(), cacBuoi['Sang'] ?? [], Icons.wb_sunny_outlined, laMayTinhBang),
-              xayDungNhomBuoi(
-                  'home.afternoon'.tr(), cacBuoi['Chieu'] ?? [], Icons.wb_cloudy_outlined, laMayTinhBang),
-              xayDungNhomBuoi(
-                  'home.evening'.tr(), cacBuoi['Toi'] ?? [], Icons.nightlight_outlined, laMayTinhBang),
-            ],
+            const SizedBox(height: 16),
+            xayDungNhomBuoi('home.morning'.tr(), cacBuoi['Sang'] ?? [], Icons.wb_sunny_outlined, laMayTinhBang),
+            xayDungNhomBuoi('home.afternoon'.tr(), cacBuoi['Chieu'] ?? [], Icons.wb_cloudy_outlined, laMayTinhBang),
+            xayDungNhomBuoi('home.evening'.tr(), cacBuoi['Toi'] ?? [], Icons.nightlight_outlined, laMayTinhBang),
           ],
         ),
       ),
@@ -864,29 +645,29 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
           ],
         ),
         const SizedBox(height: 8),
-        ...cacLop.map((lop) => xayDungMucLop(lop, laMayTinhBang)).toList(),
+        ...cacLop.map((lop) => xayDungMucLop(lop, laMayTinhBang)),
         const SizedBox(height: 8),
       ],
     );
   }
 
   Widget xayDungMucLop(LopHoc lop, bool laMayTinhBang) {
-    String displayTenMon = lop.nhomThi ? 'Thi ${lop.tenMon}' : lop.tenMon;
+    final displayTenMon = lop.nhomThi ? 'Thi ${lop.tenMon}' : lop.tenMon;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            lop.mauSac.withOpacity(0.08),
-            lop.mauSac.withOpacity(0.12),
+            lop.mauSac.withValues(alpha: 0.08),
+            lop.mauSac.withValues(alpha: 0.12),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: lop.mauSac.withOpacity(0.3),
+          color: lop.mauSac.withValues(alpha: 0.3),
           width: 1.5,
         ),
       ),
@@ -895,8 +676,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         child: InkWell(
           onTap: () => hienChiTietLop(lop),
           borderRadius: BorderRadius.circular(16),
-          splashColor: lop.mauSac.withOpacity(0.1),
-          highlightColor: lop.mauSac.withOpacity(0.05),
+          splashColor: lop.mauSac.withValues(alpha: 0.1),
+          highlightColor: lop.mauSac.withValues(alpha: 0.05),
           child: Padding(
             padding: EdgeInsets.all(laMayTinhBang ? 16 : 14),
             child: Column(
@@ -912,7 +693,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: lop.mauSac.withOpacity(0.4),
+                            color: lop.mauSac.withValues(alpha: 0.4),
                             blurRadius: 4,
                             spreadRadius: 1,
                           ),
@@ -930,39 +711,33 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                         ),
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: lop.mauSac,
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: [
-                          BoxShadow(
-                            color: lop.mauSac.withOpacity(0.3),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
+                    if (!lop.nhomThi)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: lop.mauSac,
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: [
+                            BoxShadow(
+                              color: lop.mauSac.withValues(alpha: 0.3),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          lop.phanBo.split('/').first,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
-                        ],
-                      ),
-                      child: Text(
-                        '${lop.phanBo.split('/').first}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
                         ),
                       ),
-                    ),
                     if (lop.nhomThi)
                       const Padding(
                         padding: EdgeInsets.only(left: 8),
-                        child: Icon(
-                          Icons.warning_rounded,
-                          color: Colors.red,
-                          size: 20,
-                        ),
+                        child: Icon(Icons.warning_rounded, color: Colors.red, size: 20),
                       ),
                   ],
                 ),
@@ -970,7 +745,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                 Row(
                   children: [
                     Icon(Icons.access_time_rounded,
-                        size: 16, color: Theme.of(context).iconTheme.color?.withOpacity(0.7)),
+                        size: 16, color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.7)),
                     const SizedBox(width: 6),
                     Text(
                       '${lop.gioBd} - ${lop.gioKt}',
@@ -982,7 +757,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                     ),
                     const SizedBox(width: 16),
                     Icon(Icons.room_rounded,
-                        size: 16, color: Theme.of(context).iconTheme.color?.withOpacity(0.7)),
+                        size: 16, color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.7)),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -1005,6 +780,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     );
   }
 
+  // ───────────── Chi tiết (giao diện gốc) ─────────────
+
   void hienChiTietLop(LopHoc lop) {
     showModalBottomSheet(
       context: context,
@@ -1017,7 +794,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.1),
+                color: Colors.black.withValues(alpha: 0.1),
                 blurRadius: 10,
                 offset: const Offset(0, -5),
               ),
@@ -1044,10 +821,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                   Container(
                     width: 12,
                     height: 12,
-                    decoration: BoxDecoration(
-                      color: lop.mauSac,
-                      shape: BoxShape.circle,
-                    ),
+                    decoration: BoxDecoration(color: lop.mauSac, shape: BoxShape.circle),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1063,18 +837,24 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                 ],
               ),
               const SizedBox(height: 24),
+              if (!lop.nhomThi)
+                xayDungHangChiTiet(Icons.person_outline, 'home.lecturer'.tr(), lop.hoTen),
+              xayDungHangChiTiet(Icons.room_outlined, 'home.classroom'.tr(), lop.tenPhong),
               xayDungHangChiTiet(
-                  Icons.person_outline, 'home.lecturer'.tr(), lop.hoTen),
-              xayDungHangChiTiet(
-                  Icons.room_outlined, 'home.classroom'.tr(), lop.tenPhong),
-              xayDungHangChiTiet(Icons.access_time_outlined, 'home.time'.tr(),
-                  '${lop.gioBd} - ${lop.gioKt}'),
-              xayDungHangChiTiet(Icons.calendar_today_outlined, 'home.school_day'.tr(),
-                  DateFormat('dd/MM/yyyy').format(lop.ngayBd)),
-              xayDungHangChiTiet(
-                  Icons.list_outlined, 'home.number_of_periods'.tr(), '${lop.soTiet} ${'home.periods'.tr()}'),
-              xayDungHangChiTietThoiGianGiaiLao(
-                  Icons.av_timer_outlined, lop.thoiGianGiaiLao),
+                  Icons.access_time_outlined, 'home.time'.tr(), '${lop.gioBd} - ${lop.gioKt}'),
+              if (!lop.nhomThi)
+                xayDungHangChiTiet(Icons.calendar_today_outlined, 'home.school_day'.tr(),
+                    DateFormat('dd/MM/yyyy').format(lop.ngayBd))
+              else
+                xayDungHangChiTiet(Icons.calendar_today_outlined, 'Ngày thi',
+                    DateFormat('dd/MM/yyyy').format(lop.ngayBd)),
+              if (!lop.nhomThi)
+                xayDungHangChiTiet(Icons.list_outlined, 'home.number_of_periods'.tr(),
+                    '${lop.soTiet} ${'home.periods'.tr()}'),
+              if (!lop.nhomThi && lop.thoiGianGiaiLao.isNotEmpty)
+                xayDungHangChiTietThoiGianGiaiLao(Icons.av_timer_outlined, lop.thoiGianGiaiLao),
+              if (!lop.nhomThi)
+                xayDungHangChiTiet(Icons.menu_book_outlined, 'Nội dung', lop.noiDungBaiHoc.isNotEmpty ? lop.noiDungBaiHoc : 'Không có', isNoiDung: true),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -1084,17 +864,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
                     backgroundColor: lop.mauSac,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     elevation: 0,
                   ),
                   child: Text(
                     'common.close'.tr(),
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                 ),
               ),
@@ -1106,34 +881,67 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     );
   }
 
-  Widget xayDungHangChiTiet(IconData bieuTuong, String nhan, String giaTri) {
+  Widget xayDungHangChiTiet(IconData bieuTuong, String nhan, String giaTri, {bool isNoiDung = false}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(bieuTuong, size: 20, color: Theme.of(context).iconTheme.color?.withOpacity(0.7)),
-          const SizedBox(width: 12),
-          Text(
-            '$nhan:',
-            style: TextStyle(
-              fontSize: 15,
-              color: Theme.of(context).textTheme.bodyMedium?.color,
+      child: isNoiDung
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(bieuTuong, size: 20, color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.7)),
+                    const SizedBox(width: 12),
+                    Text(
+                      '$nhan:',
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: Theme.of(context).textTheme.bodyMedium?.color,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.only(left: 32.0),
+                  child: Text(
+                    giaTri,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500, // Reduced font weight slightly for readability of long text
+                      color: Theme.of(context).textTheme.bodyLarge?.color,
+                      height: 1.4, // Added line height for better reading
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(bieuTuong, size: 20, color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.7)),
+                const SizedBox(width: 12),
+                Text(
+                  '$nhan:',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: Theme.of(context).textTheme.bodyMedium?.color,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    giaTri,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).textTheme.bodyLarge?.color,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              giaTri,
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).textTheme.bodyLarge?.color,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -1143,7 +951,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(bieuTuong, size: 20, color: Theme.of(context).iconTheme.color?.withOpacity(0.7)),
+          Icon(bieuTuong, size: 20, color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.7)),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -1160,119 +968,50 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     );
   }
 
-  Widget _buildTabSkeleton() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base = isDark ? Colors.grey[800]! : Colors.grey[300]!;
-    final highlight = isDark ? Colors.grey[700]! : Colors.grey[100]!;
+  // ───────────── Skeleton & lỗi ─────────────
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: 5,
-      itemBuilder: (_, i) => Card(
-        margin: const EdgeInsets.only(bottom: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Tiêu đề ngày
-              Row(
-                children: [
-                  Container(width: 4, height: 28, color: base),
-                  const SizedBox(width: 12),
-                  Container(width: 180, height: 20, color: base),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // Buổi học
-              ...List.generate(2, (s) => Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.wb_sunny_outlined, size: 18, color: base),
-                      const SizedBox(width: 8),
-                      Container(width: 60, height: 16, color: base),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Môn học
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: base.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: base.withOpacity(0.5)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: base,
-                                borderRadius: BorderRadius.circular(5),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Container(width: 150, height: 16, color: base),
-                            const Spacer(),
-                            Container(width: 40, height: 20, color: highlight),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Icon(Icons.access_time_rounded, size: 16, color: base),
-                            const SizedBox(width: 6),
-                            Container(width: 80, height: 14, color: highlight),
-                            const SizedBox(width: 16),
-                            Icon(Icons.room_rounded, size: 16, color: base),
-                            const SizedBox(width: 6),
-                            Container(width: 70, height: 14, color: highlight),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              )),
-            ],
-          ),
+  Widget _buildSkeleton(ThemeData theme) {
+    final dark = theme.brightness == Brightness.dark;
+    return Shimmer.fromColors(
+      baseColor: dark ? Colors.grey[800]! : Colors.grey[300]!,
+      highlightColor: dark ? Colors.grey[700]! : Colors.grey[100]!,
+      child: ListView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(12),
+        itemCount: 4,
+        itemBuilder: (_, __) => Container(
+          height: 110,
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
         ),
       ),
     );
   }
-}
 
-/// Animation mờ dần + trượt lên khi card xuất hiện
-class _AnimatedItem extends StatelessWidget {
-  final int index;
-  final Widget child;
-  const _AnimatedItem({required this.index, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 250 + (index * 80).clamp(0, 400)),
-      curve: Curves.easeOut,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(
-          offset: Offset(0, 24 * (1 - value)),
-          child: child,
+  Widget _buildLoi(ThemeData theme) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off_rounded, size: 72, color: theme.colorScheme.error.withValues(alpha: 0.7)),
+            const SizedBox(height: 20),
+            Text(loi, textAlign: TextAlign.center, style: theme.textTheme.bodyLarge),
+            const SizedBox(height: 24),
+            demNguoc > 0
+                ? Text(
+              'home.retry_in_seconds'.tr(namedArgs: {'seconds': demNguoc.toString()}),
+              style: theme.textTheme.titleMedium!.copyWith(fontWeight: FontWeight.bold),
+            )
+                : FilledButton.icon(
+              onPressed: () => taiDuLieu(refresh: true),
+              icon: const Icon(Icons.refresh),
+              label: Text('home.retry'.tr()),
+            ),
+          ],
         ),
       ),
-      child: child,
     );
   }
 }

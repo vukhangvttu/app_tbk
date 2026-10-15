@@ -88,9 +88,13 @@ class AbsenceCalculator {
           String dateKey = DateFormat('yyyy-MM-dd').format(sessionDay);
           String matchKey = '${normName}_$dateKey';
           
+          bool isOnline = session.tenPhong.toLowerCase().contains('online');
+
           if (!attendedSessions.contains(matchKey)) {
-            absentSessions++;
-            absentPeriods += periods;
+            if (!isOnline) {
+              absentSessions++;
+              absentPeriods += periods;
+            }
             absentClasses.add(session);
           }
         }

@@ -777,7 +777,7 @@ Future<NotificationFilter?> showNotificationFilterSheet(
     BuildContext context, {
       required NotificationFilter current,
       required List<SubjectFacet> facets,
-      required int Function(NotificationFilter) previewCount,
+      
     }) {
   return showModalBottomSheet<NotificationFilter>(
     context: context,
@@ -790,7 +790,7 @@ Future<NotificationFilter?> showNotificationFilterSheet(
     builder: (_) => _FilterSheet(
       current: current,
       facets: facets,
-      previewCount: previewCount,
+      
     ),
   );
 }
@@ -798,12 +798,12 @@ Future<NotificationFilter?> showNotificationFilterSheet(
 class _FilterSheet extends StatefulWidget {
   final NotificationFilter current;
   final List<SubjectFacet> facets;
-  final int Function(NotificationFilter) previewCount;
+  
 
   const _FilterSheet({
     required this.current,
     required this.facets,
-    required this.previewCount,
+    
   });
 
   @override
@@ -859,7 +859,7 @@ class _FilterSheetState extends State<_FilterSheet> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final height = MediaQuery.sizeOf(context).height * 0.85;
-    final preview = widget.previewCount(_draft);
+    
 
     final subjectFacets = widget.facets;
     final hasRealSubjects =
@@ -1050,9 +1050,9 @@ class _FilterSheetState extends State<_FilterSheet> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
-                  child: Text(
-                    'Xem $preview thông báo',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  child: const Text(
+                    'Xem thông báo',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                   ),
                 ),
               ),

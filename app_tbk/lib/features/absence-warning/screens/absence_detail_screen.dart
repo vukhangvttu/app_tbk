@@ -84,6 +84,7 @@ class AbsenceDetailScreen extends StatelessWidget {
                     itemCount: subject.absentClasses.length,
                     itemBuilder: (context, index) {
                       final lop = subject.absentClasses[index];
+                      final isOnline = lop.tenPhong.toLowerCase().contains('online');
                       // lop is actually a LopHoc instance
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
@@ -92,8 +93,8 @@ class AbsenceDetailScreen extends StatelessWidget {
                         child: ListTile(
                           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           leading: CircleAvatar(
-                            backgroundColor: Colors.red.withOpacity(0.1),
-                            child: const Icon(Icons.event_busy, color: Colors.red),
+                            backgroundColor: isOnline ? Colors.blue.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                            child: Icon(isOnline ? Icons.computer : Icons.event_busy, color: isOnline ? Colors.blue : Colors.red),
                           ),
                           title: Text(
                             DateFormat('EEEE, dd/MM/yyyy').format(lop.ngayBd),
@@ -106,7 +107,10 @@ class AbsenceDetailScreen extends StatelessWidget {
                               children: [
                                 Text('${lop.gioBd} - ${lop.gioKt} • Phòng: ${lop.tenPhong}'),
                                 const SizedBox(height: 2),
-                                Text('Số tiết: ${lop.soTiet}', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w500)),
+                                Text(
+                                  isOnline ? 'Học trực tuyến (không tính vắng)' : 'Số tiết: ${lop.soTiet}', 
+                                  style: TextStyle(color: isOnline ? Colors.blue : Colors.red, fontWeight: FontWeight.w500)
+                                ),
                               ],
                             ),
                           ),

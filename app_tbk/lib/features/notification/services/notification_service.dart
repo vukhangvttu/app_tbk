@@ -273,15 +273,8 @@ class NotificationHistoryService {
 
     if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
       response = await AuthService.authenticatedRequestNotification(
-        method: 'DELETE',
-        endpoint: '/notification_history/$mssv',
-      ).timeout(_timeout);
-    }
-
-    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
-      response = await AuthService.authenticatedRequestNotification(
-        method: 'DELETE',
-        endpoint: '/notification-history/$mssv',
+        method: 'PATCH',
+        endpoint: '/notification-history/$mssv/delete-all',
       ).timeout(_timeout);
     }
 
@@ -292,6 +285,90 @@ class NotificationHistoryService {
       final errorMsg = (decoded is Map && decoded['message'] != null)
           ? decoded['message'].toString()
           : 'Không thể xóa tất cả thông báo';
+      throw Exception(errorMsg);
+    }
+  }
+
+  /// 7. Xóa cũ hơn 7 ngày
+  /// DELETE /api/v1/notification-history/:mssv/delete-older-7-days
+  static Future<void> deleteOlderThan7Days(BuildContext context) async {
+    final mssv = await _getMssv();
+
+    var response = await AuthService.authenticatedRequestNotification(
+      method: 'DELETE',
+      endpoint: '/notification-history/$mssv/delete-older-7-days',
+    ).timeout(_timeout);
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'PATCH',
+        endpoint: '/notification-history/$mssv/delete-older-7-days',
+      ).timeout(_timeout);
+    }
+
+    if (response == null) throw Exception('Không nhận được phản hồi từ server.');
+
+    if (response.statusCode != 204 && response.statusCode != 200) {
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể xóa thông báo cũ';
+      throw Exception(errorMsg);
+    }
+  }
+
+  /// 8. Xóa cũ hơn 30 ngày
+  /// DELETE /api/v1/notification-history/:mssv/delete-older-30-days
+  static Future<void> deleteOlderThan30Days(BuildContext context) async {
+    final mssv = await _getMssv();
+
+    var response = await AuthService.authenticatedRequestNotification(
+      method: 'DELETE',
+      endpoint: '/notification-history/$mssv/delete-older-30-days',
+    ).timeout(_timeout);
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'PATCH',
+        endpoint: '/notification-history/$mssv/delete-older-30-days',
+      ).timeout(_timeout);
+    }
+
+    if (response == null) throw Exception('Không nhận được phản hồi từ server.');
+
+    if (response.statusCode != 204 && response.statusCode != 200) {
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể xóa thông báo cũ';
+      throw Exception(errorMsg);
+    }
+  }
+
+  /// 9. Xóa cũ hơn N ngày
+  /// DELETE /api/v1/notification-history/:mssv/delete-older/:days
+  static Future<void> deleteOlderThanNDays(BuildContext context, int days) async {
+    final mssv = await _getMssv();
+
+    var response = await AuthService.authenticatedRequestNotification(
+      method: 'DELETE',
+      endpoint: '/notification-history/$mssv/delete-older/$days',
+    ).timeout(_timeout);
+
+    if (response != null && (response.statusCode == 404 || response.statusCode == 405)) {
+      response = await AuthService.authenticatedRequestNotification(
+        method: 'DELETE',
+        endpoint: '/notification-history/$mssv/delete-older?days=$days',
+      ).timeout(_timeout);
+    }
+
+    if (response == null) throw Exception('Không nhận được phản hồi từ server.');
+
+    if (response.statusCode != 204 && response.statusCode != 200) {
+      final decoded = _safeJsonDecode(response.body);
+      final errorMsg = (decoded is Map && decoded['message'] != null)
+          ? decoded['message'].toString()
+          : 'Không thể xóa thông báo cũ';
       throw Exception(errorMsg);
     }
   }

@@ -2,9 +2,13 @@ import 'dart:async';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/notification/screens/notification_detail_screen.dart';
 import 'package:app_tbk/features/notification/services/notification_service.dart';
+import 'package:app_tbk/features/notification/utils/notification_filter.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:app_tbk/features/notification/utils/notification_filter.dart';
+import 'package:app_tbk/features/notification/widgets/clear_all_dialog.dart';
+import 'package:shimmer/shimmer.dart';
+
+// ─────────────────────────────── MODEL ───────────────────────────────
 
 class NotificationHistory implements FilterableNotification {
   final int id;
@@ -28,6 +32,28 @@ class NotificationHistory implements FilterableNotification {
     this.subject,
   });
 
+  factory NotificationHistory.fromJson(Map<String, dynamic> json) {
+    String str(List<String> keys) {
+      for (final k in keys) {
+        final v = json[k]?.toString();
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return '';
+    }
+
+    final read = json['is_read'] ?? json['isRead'];
+    return NotificationHistory(
+      id: int.tryParse(json['id']?.toString() ?? '') ?? 0,
+      mssv: str(['mssv']),
+      title: str(['title', 'tieuDe']),
+      body: str(['body', 'noiDung']),
+      type: str(['type', 'loaiLich']),
+      timestamp: _parseTimestamp(json),
+      is_read: read == true || read == 1 || read?.toString() == 'true',
+      subject: _readSubject(json),
+    );
+  }
+
   static String? _readSubject(Map<String, dynamic> json) {
     for (final k in const ['subject', 'tenMon', 'ten_mon', 'monHoc', 'mon_hoc', 'tenHocPhan']) {
       final v = json[k]?.toString().trim();
@@ -36,221 +62,96 @@ class NotificationHistory implements FilterableNotification {
     return null;
   }
 
-  factory NotificationHistory.fromJson(Map<String, dynamic> json) {
-    return NotificationHistory(
-      id: json['id'] is int ? json['id'] : (int.tryParse(json['id']?.toString() ?? '0') ?? 0),
-      mssv: json['mssv']?.toString() ?? '',
-      title: json['title']?.toString() ?? json['tieuDe']?.toString() ?? '',
-      body: json['body']?.toString() ?? json['noiDung']?.toString() ?? '',
-      type: json['type']?.toString() ?? json['loaiLich']?.toString() ?? '',
-      timestamp: _parseTimestamp(json),
-      is_read: json['is_read'] == true ||
-          json['is_read'] == 1 ||
-          json['is_read']?.toString() == 'true' ||
-          json['isRead'] == true ||
-          json['isRead'] == 1,
-      subject: _readSubject(json),
-    );
-  }
+  /// Server trả giờ VN thật nhưng đôi khi gắn nhãn 'Z' → bỏ cờ UTC, giữ nguyên giờ,
+  /// tránh bị .toLocal() cộng thêm 7 tiếng.
+  static DateTime _stripUtc(DateTime d) => d.isUtc
+      ? DateTime(d.year, d.month, d.day, d.hour, d.minute, d.second, d.millisecond, d.microsecond)
+      : d;
 
   static DateTime _parseTimestamp(Map<String, dynamic> json) {
-    final rawValue = json['timestamp'] ??
-        json['created_at'] ??
-        json['createdAt'] ??
-        json['sentAt'] ??
-        json['sent_at'] ??
-        json['ngayTao'] ??
-        json['ngay_tao'] ??
-        json['time'] ??
-        json['date'];
-
-    if (rawValue == null) {
-      return DateTime.now();
-    }
-
-    if (rawValue is DateTime) {
-      return rawValue.isUtc
-          ? DateTime(
-              rawValue.year,
-              rawValue.month,
-              rawValue.day,
-              rawValue.hour,
-              rawValue.minute,
-              rawValue.second,
-              rawValue.millisecond,
-              rawValue.microsecond,
-            )
-          : rawValue;
-    }
-
-    // Handle numeric timestamp (epoch milliseconds or seconds)
-    if (rawValue is num) {
-      final val = rawValue.toInt();
-      if (val > 100000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(val).toLocal();
-      } else if (val > 0) {
-        return DateTime.fromMillisecondsSinceEpoch(val * 1000).toLocal();
+    const keys = ['timestamp', 'created_at', 'createdAt', 'sentAt', 'sent_at', 'ngayTao', 'ngay_tao', 'time', 'date'];
+    dynamic raw;
+    for (final k in keys) {
+      if (json[k] != null) {
+        raw = json[k];
+        break;
       }
     }
+    if (raw == null) return DateTime.now();
+    if (raw is DateTime) return _stripUtc(raw);
 
-    // Handle List timestamp [year, month, day, hour, minute, second] (Spring Boot Jackson default for LocalDateTime)
-    if (rawValue is List && rawValue.isNotEmpty) {
+    // Jackson mặc định của LocalDateTime: [y, M, d, h, m, s]
+    if (raw is List && raw.isNotEmpty) {
       try {
-        final year = rawValue.length > 0 ? (rawValue[0] as num).toInt() : 1970;
-        final month = rawValue.length > 1 ? (rawValue[1] as num).toInt() : 1;
-        final day = rawValue.length > 2 ? (rawValue[2] as num).toInt() : 1;
-        final hour = rawValue.length > 3 ? (rawValue[3] as num).toInt() : 0;
-        final minute = rawValue.length > 4 ? (rawValue[4] as num).toInt() : 0;
-        final second = rawValue.length > 5 ? (rawValue[5] as num).toInt() : 0;
-        return DateTime(year, month, day, hour, minute, second);
+        int at(int i, int def) => i < raw.length ? (raw[i] as num).toInt() : def;
+        return DateTime(at(0, 1970), at(1, 1), at(2, 1), at(3, 0), at(4, 0), at(5, 0));
       } catch (_) {}
     }
 
-    final strVal = rawValue.toString().trim();
-    if (strVal.isEmpty) return DateTime.now();
+    final s = raw.toString().trim();
+    if (s.isEmpty) return DateTime.now();
 
-    // Check numeric string
-    final numVal = int.tryParse(strVal);
-    if (numVal != null) {
-      if (numVal > 100000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(numVal).toLocal();
-      } else if (numVal > 0) {
-        return DateTime.fromMillisecondsSinceEpoch(numVal * 1000).toLocal();
-      }
+    // Epoch (giây hoặc mili giây)
+    final n = raw is num ? raw.toInt() : int.tryParse(s);
+    if (n != null && n > 0) {
+      return DateTime.fromMillisecondsSinceEpoch(n > 100000000000 ? n : n * 1000).toLocal();
     }
 
-    // Xử lý chuỗi thời gian: Bỏ hậu tố 'Z'/'z' nếu có.
-    // Vì server trả về giờ VN thật (ICT), nhưng đôi khi Jackson/Spring Boot tự gắn nhãn 'Z'.
-    // Nếu giữ 'Z', Dart sẽ parse thành UTC, sau đó .toLocal() sẽ cộng thêm +7 giờ (múi giờ VN),
-    // khiến 13:02 chuyển thành 20:02 (tương lai ~6-7 giờ).
-    final cleanStr = strVal.replaceAll(RegExp(r'[Zz]$'), '').trim();
+    final clean = s.replaceAll(RegExp(r'[Zz]$'), '');
+    final iso = DateTime.tryParse(clean);
+    if (iso != null) return _stripUtc(iso);
 
-    // Standard DateTime parse (ISO 8601)
-    final parsed = DateTime.tryParse(cleanStr);
-    if (parsed != null) {
-      if (parsed.isUtc) {
-        return DateTime(
-          parsed.year,
-          parsed.month,
-          parsed.day,
-          parsed.hour,
-          parsed.minute,
-          parsed.second,
-          parsed.millisecond,
-          parsed.microsecond,
-        );
-      }
-      return parsed;
+    for (final f in const ['dd/MM/yyyy HH:mm:ss', 'dd/MM/yyyy HH:mm', 'dd/MM/yyyy', 'yyyy/MM/dd HH:mm:ss']) {
+      try {
+        return DateFormat(f).parseStrict(clean);
+      } catch (_) {}
     }
-
-    // Custom format parsing (e.g. "dd/MM/yyyy HH:mm:ss" or "yyyy-MM-dd HH:mm:ss")
-    try {
-      if (cleanStr.contains('/')) {
-        final parts = cleanStr.split(' ');
-        final dateParts = parts[0].split('/');
-        if (dateParts.length == 3) {
-          int day, month, year;
-          if (dateParts[0].length == 4) {
-            year = int.parse(dateParts[0]);
-            month = int.parse(dateParts[1]);
-            day = int.parse(dateParts[2]);
-          } else {
-            day = int.parse(dateParts[0]);
-            month = int.parse(dateParts[1]);
-            year = int.parse(dateParts[2]);
-          }
-          int hour = 0, minute = 0, second = 0;
-          if (parts.length > 1) {
-            final timeParts = parts[1].split(':');
-            if (timeParts.length >= 2) {
-              hour = int.parse(timeParts[0]);
-              minute = int.parse(timeParts[1]);
-              if (timeParts.length >= 3) {
-                second = int.parse(timeParts[2].split('.')[0]);
-              }
-            }
-          }
-          return DateTime(year, month, day, hour, minute, second);
-        }
-      }
-    } catch (_) {}
-
     return DateTime.now();
   }
 
-  NotificationHistory copyWith({bool? read, String? subject}) {
-    return NotificationHistory(
-      id: id,
-      mssv: mssv,
-      title: title,
-      body: body,
-      type: type,
-      timestamp: timestamp,
-      is_read: read ?? this.is_read,
-      subject: subject ?? this.subject,
-    );
-  }
+  NotificationHistory copyWith({bool? read, String? subject}) => NotificationHistory(
+    id: id,
+    mssv: mssv,
+    title: title,
+    body: body,
+    type: type,
+    timestamp: timestamp,
+    is_read: read ?? is_read,
+    subject: subject ?? this.subject,
+  );
 
-  String get typeEmoji {
-    switch (type) {
-      case 'CLASS':
-        return '📚';
-      case 'EXAM':
-        return '📝';
-      case 'REMINDER':
-        return '⏰';
-      case 'EXAM_ADVANCE':
-        return '📅';
-      default:
-        return '📬';
-    }
-  }
+  static const _types = <String, (String, String, Color)>{
+    'CLASS': ('📚', 'Lịch học', Color(0xFF2196F3)),
+    'EXAM': ('📝', 'Lịch thi', Color(0xFFFF9800)),
+    'REMINDER': ('⏰', 'Nhắc nhở', Color(0xFF4CAF50)),
+    'EXAM_ADVANCE': ('📅', 'Nhắc thi', Color(0xFFF44336)),
+  };
 
-  String get typeLabel {
-    switch (type) {
-      case 'CLASS':
-        return 'Lịch học';
-      case 'EXAM':
-        return 'Lịch thi';
-      case 'REMINDER':
-        return 'Nhắc nhở';
-      case 'EXAM_ADVANCE':
-        return 'Nhắc thi';
-      default:
-        return type;
-    }
-  }
+  String get typeEmoji => _types[type]?.$1 ?? '📬';
+  String get typeLabel => _types[type]?.$2 ?? type;
+  Color get color => _types[type]?.$3 ?? Colors.grey;
+
+  // Tạo DateFormat rất tốn kém → dùng chung 1 instance, và chỉ format khi thật sự cần.
+  static final _fullFmt = DateFormat('dd/MM/yyyy HH:mm');
 
   String get formattedTime {
-    final now = DateTime.now();
-    final difference = now.difference(timestamp);
-
-    // Nếu khoảng lệch âm (do chênh lệch vài giây giữa server clock & device clock, hoặc thông báo vừa phát ra)
-    if (difference.isNegative) {
-      final absMinutes = difference.abs().inMinutes;
-      if (absMinutes < 60) {
-        return 'Vừa xong';
-      } else {
-        return DateFormat('dd/MM/yyyy HH:mm').format(timestamp);
-      }
-    }
-
-    if (difference.inSeconds < 60) {
-      return 'Vừa xong';
-    } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes} phút trước';
-    } else if (difference.inHours < 24) {
-      return '${difference.inHours} giờ trước';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays} ngày trước';
-    } else {
-      return DateFormat('dd/MM/yyyy HH:mm').format(timestamp);
-    }
+    final d = DateTime.now().difference(timestamp);
+    // Âm = lệch đồng hồ server/thiết bị vài giây
+    if (d.isNegative) return d.inMinutes > -60 ? 'Vừa xong' : _fullFmt.format(timestamp);
+    if (d.inSeconds < 60) return 'Vừa xong';
+    if (d.inMinutes < 60) return '${d.inMinutes} phút trước';
+    if (d.inHours < 24) return '${d.inHours} giờ trước';
+    if (d.inDays < 7) return '${d.inDays} ngày trước';
+    return _fullFmt.format(timestamp);
   }
 }
 
+// ─────────────────────────────── SCREEN ───────────────────────────────
+
+enum _View { skeleton, error, empty, filteredEmpty, list }
+
 class NotificationHistoryScreen extends StatefulWidget {
-  final Function(int)? onTabSelected;
+  final Function(int)? onTabSelected; // giữ lại cho tương thích với nơi gọi
   final VoidCallback? onNotificationChanged;
 
   const NotificationHistoryScreen({
@@ -265,569 +166,206 @@ class NotificationHistoryScreen extends StatefulWidget {
 
 class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     with SingleTickerProviderStateMixin {
+  static const _limit = 20;
 
-  List<NotificationHistory> _allNotifications = [];
-  List<NotificationHistory> _classNotifications = [];
-  List<NotificationHistory> _examNotifications = [];
-  List<NotificationHistory> _reminderNotifications = [];
+  late final TabController _tabController;
+  final _scrollController = ScrollController();
 
-  void _updateNotificationState(NotificationHistory updatedNotif) {
-    bool changed = false;
+  /// Nguồn dữ liệu duy nhất; các tab chỉ là bộ lọc trên danh sách này.
+  List<NotificationHistory> _all = [];
+  NotificationFilter _filter = const NotificationFilter();
 
-    final allIndex = _allNotifications.indexWhere((n) => n.id == updatedNotif.id);
-    if (allIndex != -1) {
-      if (!_allNotifications[allIndex].is_read && updatedNotif.is_read) {
-        changed = true;
-        if (_serverUnreadCount > 0) _serverUnreadCount--;
-      }
-      _allNotifications[allIndex] = updatedNotif;
-    }
-
-    final classIndex = _classNotifications.indexWhere((n) => n.id == updatedNotif.id);
-    if (classIndex != -1) _classNotifications[classIndex] = updatedNotif;
-
-    final examIndex = _examNotifications.indexWhere((n) => n.id == updatedNotif.id);
-    if (examIndex != -1) _examNotifications[examIndex] = updatedNotif;
-
-    final reminderIndex = _reminderNotifications.indexWhere((n) => n.id == updatedNotif.id);
-    if (reminderIndex != -1) _reminderNotifications[reminderIndex] = updatedNotif;
-
-    if (changed) {
-      widget.onNotificationChanged?.call();
-    }
-  }
-
-  late TabController _tabController;
-  int _currentTabIndex = 0;
-
-  // TRẠNG THÁI CHUNG
-  bool _isDataLoaded = false;  // Đã load dữ liệu chưa?
-  bool _isLoading = false;     // Đang load không?
-  bool _hasError = false;      // Có lỗi không?
-
-  // THỐNG KÊ TỪ SERVER
-  int _serverTotalCount = 0;
-  int _serverUnreadCount = 0;
-
-// PUBLIC METHOD
-//   void loadTab() {
-//     // if (!mounted) return;
-//
-//     if (!_isDataLoaded && !_isLoading) {
-//       _loadData();
-//     }
-//   }
-
-
-
-  bool _tabTransitionLoading = false;
-  final ScrollController _scrollController = ScrollController();
-  int _page = 1;
-  final int _limit = 20;
+  bool _loaded = false;
+  bool _isLoading = false; // chỉ dùng cho UI (spinner / thanh tiến trình)
+  bool _hasError = false;
   bool _hasMore = true;
   bool _isLoadingMore = false;
+  int _page = 1;
+  int _serverTotal = 0;
+  int _serverUnread = 0;
+
+  /// Cờ "đang gọi API" KHÔNG đi kèm setState → kéo-để-làm-mới không bị rebuild giữa chừng.
+  bool _fetching = false;
+
+  /// Tăng mỗi lần reload; dùng để bỏ kết quả "tải thêm" cũ nếu list đã bị làm mới.
+  int _gen = 0;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 4, vsync: this)
+      ..addListener(() {
+        if (!_tabController.indexIsChanging) setState(() {});
+      });
     _scrollController.addListener(_onScroll);
-    _tabController = TabController(length: 4, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        final newIndex = _tabController.index;
-
-        // BẬT hiệu ứng loading khi chuyển tab
-        setState(() {
-          _tabTransitionLoading = true;
-          _currentTabIndex = newIndex;
-        });
-
-        // TẮT sau 1 frame (khi giao diện đã render xong)
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              _tabTransitionLoading = false;
-            });
-          }
-        });
-      }
-    });
   }
 
-  // Trạng thái loading riêng cho từng tab
-  final Map<int, bool> _tabLoading = {0: false, 1: false, 2: false, 3: false};
-  final Map<int, bool> _tabLoaded = {0: false, 1: false, 2: false, 3: false};
-
-
-
-  void _handleTabChange() {
-    if (!_tabController.indexIsChanging) {
-      final newIndex = _tabController.index;
-      setState(() => _currentTabIndex = newIndex);
-
-      // CHỈ LOAD KHI CHƯA TỪNG LOAD & NGƯỜI DÙNG ĐANG Ở TAB NÀY
-      if (!_isDataLoaded && !_isLoading) {
-        _loadData();
-      }
-    }
-  }
-
-  Future<void> _loadData({bool force = false}) async {
-    if ((_isDataLoaded && !force) || _isLoading) return;
-
-    setState(() {
-      _isLoading = true;
-      _hasError = false;
-      _page = 1; // Reset phân trang
-      _hasMore = true;
-    });
-
-    try {
-      // Tải dữ liệu và thống kê song song để tiết kiệm thời gian
-      final results = await Future.wait([
-        NotificationHistoryService.fetchNotifications(
-          context,
-          page: _page,
-          limit: _limit,
-        ),
-        NotificationHistoryService.getNotificationStats(context),
-      ]);
-
-      final response = results[0] as Map<String, dynamic>;
-      final stats = results[1] as Map<String, int>;
-
-      if (!mounted) return;
-
-      setState(() {
-        final notifications = response['data'] as List<NotificationHistory>;
-        _hasMore = response['has_more'] as bool;
-
-        _serverTotalCount = stats['total'] ?? 0;
-        _serverUnreadCount = stats['unread'] ?? 0;
-
-        _allNotifications = notifications;
-        _classNotifications = notifications.where((n) => n.type == 'CLASS').toList();
-        _examNotifications = notifications.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList();
-        _reminderNotifications = notifications.where((n) => n.type == 'REMINDER').toList();
-
-        _isDataLoaded = true;
-        _isLoading = false;
-        _hasError = false;
-      });
-
-      widget.onNotificationChanged?.call();
-
-    } on TimeoutException catch (_) {
-      // ✅ TẮT loading TRƯỚC KHI hiện dialog
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-
-      // ✅ Đợi 1 frame để UI cập nhật xong
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _showErrorDialog(
-            'Mất kết nối',
-            'Không thể kết nối đến máy chủ trong 20 giây.\nVui lòng kiểm tra mạng và thử lại.',
-            onRetry: _loadData,
-          );
-        }
-      });
-
-    } catch (e) {
-      // ✅ TẮT loading khi lỗi khác
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-
-      final isNetworkError = e is NoInternetException ||
-          e.toString().contains('Không có kết nối') ||
-          e.toString().contains('SocketException') ||
-          e.toString().contains('ClientException');
-
-      final title = isNetworkError ? 'Không có kết nối mạng' : 'Lỗi tải dữ liệu';
-      final message = isNetworkError
-          ? 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.'
-          : e.toString().replaceAll('Exception: ', '');
-
-      // ✅ Đợi 1 frame để UI cập nhật xong
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _showErrorDialog(
-            title,
-            message,
-            onRetry: _loadData,
-          );
-        }
-      });
-    }
-  }
-
-  Future<void> _refreshAll() async {
-    if (_isLoading) return; // ✅ Tránh gọi nhiều lần
-
-    setState(() {
-      _isDataLoaded = false;  // Cho phép reload
-      _hasError = false;
-    });
-
-    await _loadData();
-  }
-
-
-  // PUBLIC METHOD
-  void loadTab(int tabIndex) {
-    if (!mounted || _tabLoaded[tabIndex] == true) return;
-
-    setState(() {
-      _isLoading = true;
-    });
-
-    _loadDataForTab(tabIndex).then((_) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    });
-  }
-
-
-  Future<void> _loadDataForTab(int tabIndex) async {
-
-    if (_tabLoading[tabIndex] == true) return;
-
-    setState(() {
-      _tabLoading[tabIndex] = true;
-      _isLoading = true;
-      _hasError = false;
-      _page = 1;
-      _hasMore = true;
-    });
-
-    try {
-      final results = await Future.wait([
-        NotificationHistoryService.fetchNotifications(
-          context,
-          page: _page,
-          limit: _limit,
-        ),
-        NotificationHistoryService.getNotificationStats(context),
-      ]);
-
-      final response = results[0] as Map<String, dynamic>;
-      final stats = results[1] as Map<String, int>;
-
-      if (!mounted) return;
-
-      setState(() {
-        final notifications = response['data'] as List<NotificationHistory>;
-        _hasMore = response['has_more'] as bool;
-
-        _serverTotalCount = stats['total'] ?? 0;
-        _serverUnreadCount = stats['unread'] ?? 0;
-
-        _allNotifications = notifications;
-        _classNotifications = notifications.where((n) => n.type == 'CLASS').toList();
-        _examNotifications = notifications.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList();
-        _reminderNotifications = notifications.where((n) => n.type == 'REMINDER').toList();
-
-        _isDataLoaded = true;
-        _isLoading = false;
-        _hasError = false;
-      });
-
-      widget.onNotificationChanged?.call();
-
-    } on TimeoutException catch (_) {
-      // ✅ TẮT loading TRƯỚC KHI hiện dialog
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-
-      // ✅ Đợi 1 frame để UI cập nhật xong
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _showErrorDialog(
-            'Mất kết nối',
-            'Không thể kết nối đến máy chủ trong 20 giây.\nVui lòng kiểm tra mạng và thử lại.',
-            onRetry: _loadData,
-          );
-        }
-      });
-
-    } catch (e) {
-      // ✅ TẮT loading khi lỗi khác
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-
-      final isNetworkError = e is NoInternetException ||
-          e.toString().contains('Không có kết nối') ||
-          e.toString().contains('SocketException') ||
-          e.toString().contains('ClientException');
-
-      final title = isNetworkError ? 'Không có kết nối mạng' : 'Lỗi tải dữ liệu';
-      final message = isNetworkError
-          ? 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.'
-          : e.toString().replaceAll('Exception: ', '');
-
-      // ✅ Đợi 1 frame để UI cập nhật xong
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _showErrorDialog(
-            title,
-            message,
-            onRetry: _loadData,
-          );
-        }
-      });
-    }
-  }
   @override
   void dispose() {
-    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
-    _tabController.removeListener(_handleTabChange);
     _tabController.dispose();
     super.dispose();
   }
 
-  void _onScroll() {
-    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
-      _loadMoreData();
+  /// Được widget cha gọi khi tab này được chọn (tải lười, chỉ tải 1 lần).
+  void loadTab([int? _]) => _loadData();
+
+  // ───────────── Dữ liệu dẫn xuất ─────────────
+
+  List<NotificationHistory> get _tabItems => switch (_tabController.index) {
+    1 => _all.where((n) => n.type == 'CLASS').toList(),
+    2 => _all.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList(),
+    3 => _all.where((n) => n.type == 'REMINDER').toList(),
+    _ => _all,
+  };
+
+  int get _total => _serverTotal > _all.length ? _serverTotal : _all.length;
+
+  int get _unread {
+    final local = _all.where((n) => !n.is_read).length;
+    return _serverUnread > local ? _serverUnread : local;
+  }
+
+  // ───────────── Tải dữ liệu ─────────────
+
+  /// [silent] = true khi gọi từ RefreshIndicator (nó đã có spinner riêng):
+  /// không setState lúc bắt đầu → không rebuild cả màn hình giữa lúc người dùng đang kéo.
+  Future<void> _loadData({bool force = false, bool silent = false}) async {
+    if (_fetching || (_loaded && !force)) return;
+    _fetching = true;
+    _gen++;
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _hasError = false;
+      });
+    }
+
+    try {
+      // Kéo-để-làm-mới: server trả quá nhanh thì dữ liệu bị thay ngay lúc list còn đang
+      // nảy về chỗ cũ sau khi thả tay → khựng. Giữ tối thiểu 400ms cho animation lắng xuống.
+      final minWait = silent
+          ? Future<void>.delayed(const Duration(milliseconds: 400))
+          : Future<void>.value();
+
+      final results = await Future.wait([
+        NotificationHistoryService.fetchNotifications(context, page: 1, limit: _limit),
+        NotificationHistoryService.getNotificationStats(context),
+      ]);
+      await minWait;
+      if (!mounted) return;
+
+      final response = results[0] as Map<String, dynamic>;
+      final stats = results[1] as Map<String, int>;
+      final data = (response['data'] as List).cast<NotificationHistory>();
+      final hasMore = response['has_more'] == true;
+      final total = stats['total'] ?? 0;
+      final unreadSrv = stats['unread'] ?? 0;
+      final before = (_total, _unread);
+
+      // Không có gì thay đổi → không rebuild gì cả (trường hợp phổ biến khi kéo làm mới).
+      final unchanged = _loaded &&
+          !_hasError &&
+          !_isLoading &&
+          _page == 1 &&
+          _hasMore == hasMore &&
+          _serverTotal == total &&
+          _serverUnread == unreadSrv &&
+          _sameList(_all, data);
+
+      if (!unchanged) {
+        setState(() {
+          _all = data;
+          _hasMore = hasMore;
+          _page = 1;
+          _serverTotal = total;
+          _serverUnread = unreadSrv;
+          _loaded = true;
+          _isLoading = false;
+          _hasError = false;
+        });
+        // Đợi list dựng xong rồi mới trả future → RefreshIndicator mới bắt đầu animation đóng,
+        // tránh dựng list và animate cùng một khung hình.
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+      }
+
+      // Báo cho widget cha SAU khung hình hiện tại và chỉ khi số liệu đổi,
+      // để không rebuild cây cha đúng lúc spinner đang đóng lại.
+      if (before != (_total, _unread)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) widget.onNotificationChanged?.call();
+        });
+      }
+    } on TimeoutException {
+      _fail('Mất kết nối', 'Không thể kết nối đến máy chủ trong 20 giây.\nVui lòng kiểm tra mạng và thử lại.');
+    } catch (e) {
+      final offline = e is NoInternetException ||
+          e.toString().contains('Không có kết nối') ||
+          e.toString().contains('SocketException') ||
+          e.toString().contains('ClientException');
+      _fail(
+        offline ? 'Không có kết nối mạng' : 'Lỗi tải dữ liệu',
+        offline
+            ? 'Không có kết nối mạng. Vui lòng kiểm tra lại kết nối Internet.'
+            : e.toString().replaceAll('Exception: ', ''),
+      );
+    } finally {
+      _fetching = false;
     }
   }
 
-  Future<void> _loadMoreData() async {
-    if (!_hasMore || _isLoadingMore || _isLoading) return;
+  static bool _sameList(List<NotificationHistory> a, List<NotificationHistory> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id || a[i].is_read != b[i].is_read || a[i].title != b[i].title) return false;
+    }
+    return true;
+  }
 
+  void _fail(String title, String message) {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _hasError = !_loaded; // đã có dữ liệu thì giữ nguyên list, chỉ báo lỗi bằng dialog
+    });
+    _showError(title, message, onRetry: () => _loadData(force: true));
+  }
+
+  Future<void> _loadMore() async {
+    if (!_hasMore || _isLoadingMore || _fetching || !_loaded) return;
+    final gen = _gen;
     setState(() => _isLoadingMore = true);
-
     try {
-      // Dùng Infinite Scroll - truyền before_id là ID của thông báo cuối cùng
-      int? beforeId;
-      if (_allNotifications.isNotEmpty) {
-        beforeId = _allNotifications.last.id;
-      }
-
       final response = await NotificationHistoryService.fetchNotifications(
         context,
         page: _page + 1,
         limit: _limit,
-        beforeId: beforeId,
+        beforeId: _all.isNotEmpty ? _all.last.id : null,
       );
-
-      if (!mounted) return;
-
+      if (!mounted || gen != _gen) return; // list đã bị làm mới → bỏ kết quả cũ
       setState(() {
         _page++;
-        final newNotifications = response['data'] as List<NotificationHistory>;
         _hasMore = response['has_more'] as bool;
-
-        if (newNotifications.isNotEmpty) {
-          // Chỉ thêm những thông báo chưa có
-          for (var notif in newNotifications) {
-            if (!_allNotifications.any((n) => n.id == notif.id)) {
-              _allNotifications.add(notif);
-              if (notif.type == 'CLASS') _classNotifications.add(notif);
-              if (notif.type == 'EXAM' || notif.type == 'EXAM_ADVANCE') _examNotifications.add(notif);
-              if (notif.type == 'REMINDER') _reminderNotifications.add(notif);
-            }
-          }
-        }
+        final ids = _all.map((n) => n.id).toSet();
+        _all = [..._all, ...(response['data'] as List<NotificationHistory>).where((n) => ids.add(n.id))];
       });
     } catch (e) {
-      // Bỏ qua lỗi khi tải thêm để không ảnh hưởng UX
-      debugPrint("Load more error: $e");
+      debugPrint('Load more error: $e'); // không làm phiền người dùng
     } finally {
-      if (mounted) {
-        setState(() => _isLoadingMore = false);
-      }
+      if (mounted) setState(() => _isLoadingMore = false);
     }
   }
 
-  // Helper method để show error dialog
-  void _showErrorDialog(String title, String message, {VoidCallback? onRetry}) {
-    if (!mounted) return;
-
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-        ),
-        elevation: 8,
-        backgroundColor: isDark ? Colors.grey[850] : Colors.white,
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: Colors.red.withOpacity(0.3),
-              width: 1,
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Error icon with animation
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(isDark ? 0.2 : 0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(isDark ? 0.3 : 0.15),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.error_outline_rounded,
-                      color: Colors.red,
-                      size: 36,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // Title
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 12),
-
-              // Message
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.grey[800] : Colors.grey[100],
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.info_outline_rounded,
-                      size: 20,
-                      color: isDark ? Colors.grey[400] : Colors.grey[600],
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        message,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: isDark ? Colors.grey[300] : Colors.grey[700],
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              // Action buttons
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.pop(context),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        side: BorderSide(
-                          color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-                        ),
-                      ),
-                      child: Text(
-                        'Đóng',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: isDark ? Colors.grey[300] : Colors.grey[700],
-                        ),
-                      ),
-                    ),
-                  ),
-                  if (onRetry != null) ...[
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () {
-                          Navigator.pop(context);
-                          onRetry();
-                        },
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor: Colors.red.shade700,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        icon: const Icon(Icons.refresh_rounded, size: 20,  color: Colors.white,),
-                        label: const Text(
-                          'Thử lại',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final p = _scrollController.position;
+    // maxScrollExtent > 0: list ngắn (max = 0) trước đây luôn thỏa điều kiện → gọi _loadMore
+    // liên tục mỗi khi người dùng kéo xuống để refresh.
+    if (p.maxScrollExtent > 0 && p.pixels >= p.maxScrollExtent - 200) _loadMore();
   }
 
-
-  NotificationFilter _filter = const NotificationFilter();
-
-  List<NotificationHistory> get _tabBaseNotifications => switch (_currentTabIndex) {
-        0 => _allNotifications,
-        1 => _classNotifications,
-        2 => _examNotifications,
-        3 => _reminderNotifications,
-        _ => [],
-      };
-
-  List<NotificationHistory> get _currentNotifications =>
-      _filter.apply(_tabBaseNotifications);
+  // ───────────── Lọc ─────────────
 
   void _setFilter(NotificationFilter f) {
     setState(() => _filter = f);
@@ -835,1546 +373,675 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   }
 
   Future<void> _openFilterSheet() async {
+    final items = _tabItems;
     final result = await showNotificationFilterSheet(
       context,
       current: _filter,
-      facets: NotificationFilter.subjectFacets(_tabBaseNotifications),
-      previewCount: (f) => f.apply(_tabBaseNotifications).length,
+      facets: NotificationFilter.subjectFacets(items),
+      
     );
     if (result != null && mounted) _setFilter(result);
   }
 
-  /// Lọc chạy trên dữ liệu đã tải: nếu kết quả ít mà server còn dữ liệu cũ hơn
-  /// thì tải thêm (tối đa 10 trang).
+  /// Lọc chạy trên dữ liệu đã tải: ít kết quả mà server còn dữ liệu cũ → tải thêm (tối đa 10 trang).
   Future<void> _autoLoadForFilter() async {
     if (!_filter.hasCriteria) return;
     var guard = 0;
-    while (mounted && _hasMore && !_isLoadingMore && !_isLoading &&
-        _currentNotifications.length < 15 && guard++ < 10) {
-      await _loadMoreData();
+    while (mounted &&
+        _hasMore &&
+        !_isLoadingMore &&
+        !_fetching &&
+        _filter.apply(_tabItems).length < 15 &&
+        guard++ < 10) {
+      await _loadMore();
     }
   }
 
-  Map<String, int> get _statistics {
-    // Nếu tổng từ server < số lượng local đang hiện có, lấy local (để tránh lỗi hiển thị khi server lag)
-    final total = _serverTotalCount > _allNotifications.length ? _serverTotalCount : _allNotifications.length;
-    final unreadLocal = _allNotifications.where((n) => !n.is_read).length;
-    final unread = _serverUnreadCount > unreadLocal ? _serverUnreadCount : unreadLocal;
+  // ───────────── Hành động ─────────────
 
-    return {
-      'total': total,
-      'unread': unread,
-      'class': _classNotifications.length,
-      'exam': _examNotifications.length,
-      'reminder': _reminderNotifications.length,
-    };
+  void _applyRead(NotificationHistory updated) {
+    final i = _all.indexWhere((n) => n.id == updated.id);
+    if (i == -1) return;
+    final becameRead = !_all[i].is_read && updated.is_read;
+    setState(() {
+      _all[i] = updated;
+      if (becameRead && _serverUnread > 0) _serverUnread--;
+    });
+    if (becameRead) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onNotificationChanged?.call();
+      });
+    }
   }
 
+  /// Hoàn thành khi animation đóng của route đã chạy xong.
+  Future<void> _waitRouteDismissed(ModalRoute<dynamic> route) {
+    final anim = route.animation;
+    if (anim == null || anim.status == AnimationStatus.dismissed) return Future.value();
+
+    final done = Completer<void>();
+    void onStatus(AnimationStatus s) {
+      if (s == AnimationStatus.dismissed && !done.isCompleted) {
+        anim.removeStatusListener(onStatus);
+        done.complete();
+      }
+    }
+
+    anim.addStatusListener(onStatus);
+    return done.future;
+  }
+
+  Future<void> _open(NotificationHistory n) async {
+    final wasUnread = !n.is_read;
+
+    // Đánh dấu đã đọc ngầm trên server (không rebuild UI)
+    if (wasUnread) {
+      unawaited(() async {
+        try {
+          await NotificationHistoryService.markAsRead(context, n.id);
+        } catch (e) {
+          debugPrint('❌ Silent error marking as read: $e');
+        }
+      }());
+    }
+
+    final route = MaterialPageRoute<NotificationHistory>(
+      builder: (_) => NotificationDetailScreen(
+        notification: n.copyWith(read: true),
+      ),
+    );
+    await Navigator.push(context, route);
+
+    // Future của push xong NGAY KHI BẮT ĐẦU pop → phải chờ animation quay lại kết thúc
+    // rồi mới cập nhật UI, nếu không setState sẽ chạy chung khung hình với animation.
+    await _waitRouteDismissed(route);
+    await WidgetsBinding.instance.endOfFrame;
+
+    if (!mounted || !wasUnread) return;
+    _applyRead(n.copyWith(read: true));
+  }
 
   Future<void> _markAllAsRead() async {
-    // 1. Hỏi xác nhận trước
-    final confirm = await MarkAllReadDialog.show(
-      context,
-      unreadCount: _statistics['unread'] ?? 0,
+    final ok = await _confirm(
+      icon: Icons.done_all_rounded,
+      color: Theme.of(context).primaryColor,
+      title: 'Đánh dấu tất cả đã đọc?',
+      message: '$_unread thông báo chưa đọc sẽ chuyển sang đã đọc.',
+      okLabel: 'Xác nhận',
     );
-    if (confirm != true || !mounted) return;
-
-    // 2. Thực hiện
+    if (!ok || !mounted) return;
     try {
       await NotificationHistoryService.markAllAsRead(context);
       await _loadData(force: true);
-      widget.onNotificationChanged?.call();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              // Container(
-              //   padding: const EdgeInsets.all(8),
-              //   decoration: BoxDecoration(
-              //     color: Colors.white.withValues(alpha: 0.2),
-              //     shape: BoxShape.circle,
-              //   ),
-              //   child: const Icon(Icons.done_all_rounded, color: Colors.white, size: 10),
-              // ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Đã đánh dấu tất cả là đã đọc',
-                  style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.green.shade600,
-          behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.all(16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      );
+      _toast('Đã đánh dấu tất cả là đã đọc');
     } catch (e) {
-      debugPrint('❌ Error marking all as read: $e');
-      if (!mounted) return;
-      _showErrorDialog(
-        'Lỗi đánh dấu tất cả',
-        'Không thể đánh dấu tất cả thông báo là đã đọc. Vui lòng thử lại.',
-        onRetry: _markAllAsRead,
-      );
+      debugPrint('Error marking all as read: $e');
+      if (mounted) {
+        _showError('Lỗi', 'Không thể đánh dấu tất cả đã đọc. Vui lòng thử lại.', onRetry: _markAllAsRead);
+      }
     }
   }
 
-  Future<void> _deleteNotification(NotificationHistory notification) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+  Future<void> _clearAll() async {
+    await ClearAllDialog.show(
+      context,
+      count: _total,
+      onConfirm: () => NotificationHistoryService.deleteAllNotifications(context),
+      onCleared: _applyClearedState,
+    );
+  }
 
-    final confirm = await showDialog<bool>(
+  Future<void> _clearOlderThan7Days() async {
+    await ClearAllDialog.show(
+      context,
+      count: 0,
+      title: 'Xóa thông báo cũ?',
+      bodyText: 'Các thông báo gửi trước 7 ngày sẽ bị xóa.\nHành động này không thể hoàn tác.',
+      buttonText: 'Xóa',
+      onConfirm: () => NotificationHistoryService.deleteOlderThan7Days(context),
+      onCleared: () => _loadData(force: true),
+    );
+  }
+
+  Future<void> _clearOlderThan30Days() async {
+    await ClearAllDialog.show(
+      context,
+      count: 0,
+      title: 'Xóa thông báo cũ?',
+      bodyText: 'Các thông báo gửi trước 30 ngày sẽ bị xóa.\nHành động này không thể hoàn tác.',
+      buttonText: 'Xóa',
+      onConfirm: () => NotificationHistoryService.deleteOlderThan30Days(context),
+      onCleared: () => _loadData(force: true),
+    );
+  }
+
+  void _applyClearedState() {
+    if (!mounted) return;
+    setState(() {
+      _gen++;
+      _all = [];
+      _serverTotal = 0;
+      _serverUnread = 0;
+      _hasMore = false;
+      _page = 1;
+      _filter = const NotificationFilter();
+    });
+    widget.onNotificationChanged?.call();
+  }
+
+  /// Dùng cho Dismissible.confirmDismiss: hỏi → gọi API → true thì item bị gỡ khỏi UI.
+  Future<bool> _deleteOne(NotificationHistory n) async {
+    final result = await ClearAllDialog.show(
+      context,
+      count: 0,
+      title: 'Xác nhận xóa',
+      bodyText: 'Bạn có chắc muốn xóa thông báo này?',
+      buttonText: 'Xóa',
+      onConfirm: () => NotificationHistoryService.deleteNotification(context, n.id),
+      onCleared: () {}, // Dismissible tự gọi _removeLocal khi onDismissed
+    );
+    return result == true;
+  }
+
+  void _removeLocal(NotificationHistory n) {
+    setState(() {
+      _all.removeWhere((x) => x.id == n.id);
+      if (_serverTotal > 0) _serverTotal--;
+      if (!n.is_read && _serverUnread > 0) _serverUnread--;
+    });
+    widget.onNotificationChanged?.call();
+    _toast('Đã xóa thông báo');
+  }
+
+  // ───────────── Dialog / Snackbar dùng chung ─────────────
+
+  Future<bool> _confirm({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String message,
+    required String okLabel,
+  }) async {
+    final r = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-        ),
-        backgroundColor: isDark ? Colors.grey[850] : Colors.white,
-        contentPadding: const EdgeInsets.all(24),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Icon container với animation
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.red.withOpacity(isDark ? 0.3 : 0.15),
-                    Colors.red.withOpacity(isDark ? 0.2 : 0.1),
-                  ],
-                ),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Colors.red.withOpacity(0.3),
-                  width: 2,
-                ),
-              ),
-              child: Center(
-                child: Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(isDark ? 0.25 : 0.12),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.delete_outline_rounded,
-                    color: Colors.red,
-                    size: 32,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // Title
-            Text(
-              'Xác nhận xóa',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Message
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey[800] : Colors.grey[100],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-                  width: 1,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.info_outline_rounded,
-                    size: 22,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Bạn có chắc muốn xóa thông báo này?',
-                      style: TextStyle(
-                        fontSize: 15,
-                        color: isDark ? Colors.grey[300] : Colors.grey[700],
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-
-            // Action buttons
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context, false),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      side: BorderSide(
-                        color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-                        width: 1.5,
-                      ),
-                    ),
-                    icon: Icon(
-                      Icons.close_rounded,
-                      size: 20,
-                      color: isDark ? Colors.grey[300] : Colors.grey[700],
-                    ),
-                    label: Text(
-                      'Hủy',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.grey[300] : Colors.grey[700],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      backgroundColor: Colors.red,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 2,
-                    ),
-                    icon: const Icon(
-                      Icons.delete_rounded,
-                      size: 20,
-                      color: Colors.white,
-                    ),
-                    label: const Text(
-                      'Xóa',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-
-    // ✅ QUAN TRỌNG: Chỉ xử lý khi confirm == true
-    if (confirm != true) {
-      return; // Người dùng chọn "Hủy" -> không làm gì
-    }
-
-    // Từ đây trở đi chỉ chạy khi người dùng chọn "Xóa"
-    try {
-      await NotificationHistoryService.deleteNotification(context, notification.id);
-
-      // ✅ Xóa thành công -> reload data
-      await _loadData(force: true);
-      widget.onNotificationChanged?.call();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Container(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.check_circle_rounded,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Đã xóa thông báo',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            backgroundColor: Colors.green.shade600,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
-            duration: const Duration(seconds: 3),
-            elevation: 6,
-          ),
-        );
-      }
-    } catch (e) {
-      print('❌ Error deleting notification: $e');
-      if (mounted) {
-        _showErrorDialog(
-          'Lỗi xóa thông báo',
-          'Không thể xóa thông báo. Vui lòng thử lại.',
-          onRetry: () => _deleteNotification(notification),
-        );
-      }
-    }
-  }
-  Future<void> _clearAll() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 24),
-            ),
-            const SizedBox(width: 12),
-            const Expanded(child: Text('Xóa tất cả thông báo')),
-          ],
-        ),
-        content: const Text('Bạn có chắc muốn xóa TẤT CẢ thông báo? Hành động này không thể hoàn tác.'),
+      builder: (c) => AlertDialog(
+        icon: Icon(icon, color: color, size: 32),
+        title: Text(title, textAlign: TextAlign.center),
+        content: Text(message, textAlign: TextAlign.center),
+        actionsAlignment: MainAxisAlignment.center,
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Hủy'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Hủy')),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Xóa tất cả'),
+            style: FilledButton.styleFrom(backgroundColor: color),
+            onPressed: () => Navigator.pop(c, true),
+            child: Text(okLabel),
           ),
         ],
       ),
     );
-
-    if (confirm == true) {
-      try {
-        await NotificationHistoryService.deleteAllNotifications(context);
-
-        await _loadData(force: true);
-        widget.onNotificationChanged?.call();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.delete_sweep, color: Colors.white),
-                  const SizedBox(width: 8),
-                  const Text('Đã xóa tất cả thông báo', style: TextStyle(color: Colors.white)),
-                ],
-              ),
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          );
-        }
-      } catch (e) {
-        print('❌ Error clearing all: $e');
-        _showErrorDialog(
-          'Lỗi xóa tất cả',
-          'Không thể xóa tất cả thông báo. Vui lòng thử lại.',
-          onRetry: _clearAll,
-        );
-      }
-    }
+    return r == true;
   }
+
+  void _showError(String title, String message, {VoidCallback? onRetry}) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        icon: const Icon(Icons.error_outline_rounded, color: Colors.red, size: 32),
+        title: Text(title, textAlign: TextAlign.center),
+        content: Text(message, textAlign: TextAlign.center),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('Đóng')),
+          if (onRetry != null)
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(c);
+                onRetry();
+              },
+              child: const Text('Thử lại'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 2)),
+    );
+  }
+
+  // ───────────── UI ─────────────
 
   @override
   Widget build(BuildContext context) {
+    // Tính 1 lần mỗi build (trước đây _tabItems/_unread bị tính lặp nhiều lần).
+    final items = _tabItems;
+    final shown = _filter.apply(items);
+    final total = _total;
+    final unread = _unread;
+
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final shown = _currentNotifications;
+
+    final view = (!_loaded && !_hasError)
+        ? _View.skeleton // gồm cả lúc chưa bắt đầu tải → không còn nháy "Không có thông báo"
+        : _hasError
+            ? _View.error
+            : shown.isEmpty
+                ? (_filter.hasCriteria ? _View.filteredEmpty : _View.empty)
+                : _View.list;
 
     return Scaffold(
-      backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('Lịch sử thông báo', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        centerTitle: false, // tiêu đề nằm bên trái
+        titleSpacing: 16,   // khoảng cách từ mép trái (tùy chỉnh
+        title: Text(
+          'Lịch sử thông báo',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+            color: isDark ? Colors.white : Colors.black87,
+          ),
+        ),
         elevation: 0,
+        iconTheme: IconThemeData(
+          color: isDark ? Colors.white : Colors.black87,
+        ),
         actions: [
-          if (_statistics['unread']! > 0)
+          if (unread > 0)
             IconButton(
               icon: const Icon(Icons.done_all_rounded),
               tooltip: 'Đánh dấu tất cả đã đọc',
               onPressed: _markAllAsRead,
             ),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert_rounded),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            onSelected: (value) {
-              if (value == 'clear') _clearAll();
-              if (value == 'refresh') _refreshAll();
+            onSelected: (v) {
+              switch (v) {
+                case 'clear':
+                  _clearAll();
+                case 'clear_7days':
+                  _clearOlderThan7Days();
+                case 'clear_30days':
+                  _clearOlderThan30Days();
+                default:
+                  _loadData(force: true);
+              }
             },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'refresh',
-                child: Row(children: [Icon(Icons.refresh, size: 20), SizedBox(width: 12), Text('Làm mới')]),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'refresh', child: Text('Làm mới')),
+              PopupMenuItem(value: 'clear', child: Text('Xóa tất cả', style: TextStyle(color: Colors.red))),
+              PopupMenuItem(value: 'clear_7days', child: Text('Xóa cũ hơn 7 ngày', style: TextStyle(color: Colors.orange))),
+              PopupMenuItem(value: 'clear_30days', child: Text('Xóa cũ hơn 30 ngày', style: TextStyle(color: Colors.amber))),
+            ],
+          ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: false, // 4 tab chia đều chiều rộng màn hình
+          tabAlignment: TabAlignment.fill,
+          indicatorSize: TabBarIndicatorSize.tab,
+          labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+          tabs: const [
+            _FitTab('Tất cả'),
+            _FitTab('Lớp học'),
+            _FitTab('Lịch thi'),
+            _FitTab('Nhắc nhở'),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          if (_isLoading && _loaded) const LinearProgressIndicator(minHeight: 2),
+
+          // Giữ chỗ, chỉ hiện mờ dần khi có số liệu → không bị nhảy số
+          AnimatedOpacity(
+            opacity: _loaded ? 1 : 0,
+            duration: const Duration(milliseconds: 250),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('$total thông báo · $unread chưa đọc',
+                    style: Theme.of(context).textTheme.bodySmall),
               ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'clear',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete_sweep, color: Colors.red, size: 20),
-                    SizedBox(width: 12),
-                    Text('Xóa tất cả', style: TextStyle(color: Colors.red)),
-                  ],
-                ),
+            ),
+          ),
+
+          // Thanh lọc trượt ra mượt, không đẩy danh sách đột ngột
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: (_all.isNotEmpty || _filter.isActive)
+                ? NotificationFilterBar(
+                    filter: _filter,
+                    items: items,
+                    onChanged: _setFilter,
+                    onOpenSheet: _openFilterSheet,
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+
+          Expanded(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 280),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              layoutBuilder: (current, previous) => Stack(
+                fit: StackFit.expand,
+                children: [...previous, if (current != null) current],
               ),
-              const PopupMenuItem(
-                value: 'clear_7days',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete_outline, color: Colors.orange, size: 20),
-                    SizedBox(width: 12),
-                    Text('Xóa cũ hơn 7 ngày', style: TextStyle(color: Colors.orange)),
-                  ],
-                ),
+              // key theo TRẠNG THÁI (không phải theo dữ liệu) → chỉ cross-fade khi đổi trạng thái
+              child: KeyedSubtree(
+                key: ValueKey(view),
+                child: _buildContent(view, shown, isDark),
               ),
-              const PopupMenuItem(
-                value: 'clear_30days',
-                child: Row(
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContent(_View view, List<NotificationHistory> shown, bool isDark) {
+    return switch (view) {
+      _View.skeleton => _buildSkeleton(isDark),
+      _View.error => _empty(Icons.error_outline_rounded, 'Không tải được thông báo',
+          actionLabel: 'Thử lại', onAction: () => _loadData(force: true)),
+      _View.filteredEmpty => _empty(
+          Icons.filter_alt_off_rounded,
+          'Không có thông báo phù hợp',
+          subtitle: _hasMore
+              ? 'Thử tải thêm thông báo cũ hơn hoặc nới lỏng bộ lọc.'
+              : 'Hãy nới lỏng bộ lọc.',
+          actionLabel: _hasMore ? 'Tải thêm thông báo cũ hơn' : null,
+          onAction: _loadMore,
+          secondaryLabel: 'Xóa bộ lọc',
+          onSecondary: () => _setFilter(const NotificationFilter()),
+        ),
+      _View.empty => _empty(
+          Icons.notifications_off_rounded,
+          'Không có thông báo',
+          subtitle: switch (_tabController.index) {
+            1 => 'Chưa có thông báo lịch học',
+            2 => 'Chưa có thông báo lịch thi',
+            3 => 'Chưa có thông báo nhắc nhở',
+            _ => 'Chưa có thông báo nào',
+          },
+        ),
+      _View.list => _buildList(shown),
+    };
+  }
+
+  /// Skeleton có hình dạng giống card thật → khi dữ liệu về chỉ là cross-fade, không đổi bố cục.
+  Widget _buildSkeleton(bool isDark) {
+    Widget bar(double factor, double h) => FractionallySizedBox(
+          widthFactor: factor,
+          alignment: Alignment.centerLeft,
+          child: Container(
+            height: h,
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6)),
+          ),
+        );
+
+    return Shimmer.fromColors(
+      baseColor: isDark ? const Color(0xFF1E293B) : Colors.grey.shade300,
+      highlightColor: isDark ? const Color(0xFF334155) : Colors.grey.shade100,
+      child: ListView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        itemCount: 8,
+        itemBuilder: (_, __) => Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white, width: 1.5), // viền để thấy hình card
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.delete_outline, color: Colors.amber, size: 20),
-                    SizedBox(width: 12),
-                    Text('Xóa cũ hơn 30 ngày', style: TextStyle(color: Colors.amber)),
+                    bar(0.6, 13),
+                    const SizedBox(height: 7),
+                    bar(0.9, 11),
+                    const SizedBox(height: 7),
+                    bar(0.35, 9),
                   ],
                 ),
               ),
             ],
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildStatisticsCard(isDark),
-          _buildTabBar(isDark, theme),
-          if (_allNotifications.isNotEmpty || _filter.isActive)
-            NotificationFilterBar(
-              filter: _filter,
-              items: _tabBaseNotifications,
-              onChanged: _setFilter,
-              onOpenSheet: _openFilterSheet,
-            ),
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _hasError
-                ? _buildEmptyState(isDark)
-                : _tabTransitionLoading
-                ? _buildTabSkeleton()
-                : shown.isEmpty
-                ? (_filter.hasCriteria
-                    ? _buildFilteredEmptyState()
-                    : _buildEmptyState(isDark))
-                : _buildNotificationList(shown, isDark),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildNotificationList(List<NotificationHistory> shown, bool isDark) {
+  Widget _buildList(List<NotificationHistory> shown) {
     final entries = _filter.effectiveGroupByDay
         ? NotificationFilter.buildEntries(shown)
         : List<Object>.of(shown);
-    final showLoadMoreBtn = _filter.hasCriteria && _hasMore && !_isLoadingMore;
-    final extra = (_isLoadingMore || showLoadMoreBtn) ? 1 : 0;
+    final showMoreBtn = _filter.hasCriteria && _hasMore && !_isLoadingMore;
+    final extra = (_isLoadingMore || showMoreBtn) ? 1 : 0;
 
     return RefreshIndicator(
-      onRefresh: _refreshAll,
+      // silent: RefreshIndicator đã có spinner → không setState lúc bắt đầu kéo
+      onRefresh: () => _loadData(force: true, silent: true),
       child: ListView.builder(
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         itemCount: entries.length + extra,
-        itemBuilder: (context, i) {
+        itemBuilder: (_, i) {
           if (i >= entries.length) {
             return _isLoadingMore
                 ? const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Center(child: CircularProgressIndicator()))
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
+            )
                 : Center(
-                    child: TextButton.icon(
-                      onPressed: _loadMoreData,
-                      icon: const Icon(Icons.history_rounded),
-                      label: const Text('Tải thêm thông báo cũ hơn'),
-                    ),
-                  );
+              child: TextButton.icon(
+                onPressed: _loadMore,
+                icon: const Icon(Icons.history_rounded),
+                label: const Text('Tải thêm thông báo cũ hơn'),
+              ),
+            );
           }
           final e = entries[i];
-          if (e is NotificationDayHeader) {
-            return NotificationDayHeaderTile(header: e);
-          }
-          return _buildNotificationCard(e as NotificationHistory, isDark);
+          return e is NotificationDayHeader
+              ? NotificationDayHeaderTile(header: e)
+              : _buildCard(e as NotificationHistory);
         },
       ),
     );
   }
 
-  Widget _buildFilteredEmptyState() {
-    final scheme = Theme.of(context).colorScheme;
+  Widget _buildCard(NotificationHistory n) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final unread = !n.is_read;
+
+    // Màu nền card
+    final cardBg = unread
+        ? (isDark
+            ? Color.alphaBlend(theme.primaryColor.withValues(alpha: 0.18), const Color(0xFF1E293B))
+            : Colors.white)
+        : (isDark
+            ? const Color(0xFF0F172A).withValues(alpha: 0.6)
+            : Colors.grey.shade100.withValues(alpha: 0.6));
+
+    // Viền card
+    final borderColor = unread
+        ? (isDark ? theme.primaryColor.withValues(alpha: 0.6) : theme.primaryColor.withValues(alpha: 0.4))
+        : (isDark ? Colors.grey.shade800.withValues(alpha: 0.5) : Colors.grey.shade300.withValues(alpha: 0.5));
+
+    return Dismissible(
+      key: ValueKey(n.id),
+      direction: DismissDirection.endToStart,
+      confirmDismiss: (_) => _deleteOne(n),
+      onDismissed: (_) => _removeLocal(n),
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        margin: const EdgeInsets.only(bottom: 6),
+        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)),
+        child: const Icon(Icons.delete_rounded, color: Colors.white),
+      ),
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 6),
+        elevation: unread ? (isDark ? 0 : 1) : 0,
+        clipBehavior: Clip.hardEdge, // antiAlias tốn hơn trên mỗi item khi cuộn/overscroll
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: borderColor,
+            width: unread ? 1.5 : 1.0,
+          ),
+        ),
+        color: cardBg,
+        child: ListTile(
+          onTap: () => _open(n), // xem toàn bộ nội dung ở màn hình chi tiết
+          dense: true,
+          minLeadingWidth: 0,
+          horizontalTitleGap: 10,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          leading: CircleAvatar(
+            radius: 15,
+            backgroundColor: unread
+                ? n.color.withValues(alpha: isDark ? 0.25 : 0.15)
+                : (isDark ? Colors.grey.shade800.withValues(alpha: 0.5) : Colors.grey.shade200),
+            child: Text(
+              n.typeEmoji,
+              style: TextStyle(
+                fontSize: 14,
+                color: unread ? null : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
+              ),
+            ),
+          ),
+          title: Text(
+            n.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontWeight: unread ? FontWeight.bold : FontWeight.normal,
+              fontSize: unread ? 14.5 : 13.5,
+              color: unread
+                  ? (isDark ? Colors.white : const Color(0xFF0F172A))
+                  : (isDark ? Colors.grey.shade500 : Colors.grey.shade600),
+            ),
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 2),
+              Text(
+                n.body,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: unread ? 12.5 : 12.0,
+                  color: unread
+                      ? (isDark ? Colors.grey.shade300 : Colors.grey.shade800)
+                      : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${n.typeLabel} · ${n.formattedTime}',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: unread
+                      ? n.color
+                      : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
+                  fontWeight: unread ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+          trailing: unread
+              ? Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: theme.primaryColor,
+                    shape: BoxShape.circle,
+                    boxShadow: isDark
+                        ? [
+                            BoxShadow(
+                              color: theme.primaryColor.withValues(alpha: 0.6),
+                              blurRadius: 4,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                )
+              : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _empty(
+      IconData icon,
+      String title, {
+        String? subtitle,
+        String? actionLabel,
+        VoidCallback? onAction,
+        String? secondaryLabel,
+        VoidCallback? onSecondary,
+      }) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.filter_alt_off_rounded, size: 56, color: scheme.onSurfaceVariant),
-            const SizedBox(height: 16),
-            const Text('Không có thông báo phù hợp',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            Text(
-              _hasMore
-                  ? 'Thử tải thêm thông báo cũ hơn hoặc nới lỏng bộ lọc.'
-                  : 'Hãy nới lỏng bộ lọc.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: scheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 16),
-            if (_hasMore)
-              FilledButton.tonalIcon(
-                onPressed: _loadMoreData,
-                icon: const Icon(Icons.history_rounded),
-                label: const Text('Tải thêm thông báo cũ hơn'),
-              ),
-            TextButton(
-              onPressed: () => _setFilter(const NotificationFilter()),
-              child: const Text('Xóa bộ lọc'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTabSkeleton() {
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      itemCount: 5,
-      itemBuilder: (context, index) => Card(
-        margin: const EdgeInsets.only(bottom: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: ListTile(
-          leading: Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(14),
-            ),
-          ),
-          title: Container(
-            height: 16,
-            color: Colors.grey[300],
-            margin: const EdgeInsets.only(bottom: 8),
-          ),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(height: 12, color: Colors.grey[200], margin: const EdgeInsets.only(bottom: 4)),
-              Container(height: 12, width: 100, color: Colors.grey[200]),
+            Icon(icon, size: 56, color: muted),
+            const SizedBox(height: 12),
+            Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            if (subtitle != null) ...[
+              const SizedBox(height: 6),
+              Text(subtitle, textAlign: TextAlign.center, style: TextStyle(color: muted)),
             ],
-          ),
-          trailing: Container(
-            width: 12,
-            height: 12,
-            decoration: const BoxDecoration(
-              color: Colors.grey,
-              shape: BoxShape.circle,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-  Widget _buildStatisticsCard(bool isDark) {
-    final total = _statistics['total']!;
-    final unread = _statistics['unread']!;
-    final classCount = _statistics['class']!;
-    final examCount = _statistics['exam']!;
-    final reminderCount = _statistics['reminder']!;
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: isDark
-              ? [
-            Theme.of(context).primaryColor.withValues(alpha:0.8),
-            Theme.of(context).primaryColor.withValues(alpha:0.6),
-          ]
-              : [
-            Theme.of(context).primaryColor,
-            Theme.of(context).primaryColor.withValues(alpha:0.85),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Theme.of(context).primaryColor.withValues(alpha:0.3),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: _buildStatItem('Tổng', total, Icons.notifications_active_rounded),
-          ),
-          Container(
-            width: 1,
-            height: 40,
-            color: Colors.white.withValues(alpha:0.3),
-          ),
-          Expanded(
-            child: _buildStatItem('Chưa đọc', unread, Icons.mark_email_unread_rounded),
-          ),
-          Container(
-            width: 1,
-            height: 40,
-            color: Colors.white.withValues(alpha:0.3),
-          ),
-          Expanded(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _buildMiniCount('📚', classCount),
-                _buildMiniCount('📝', examCount),
-                _buildMiniCount('⏰', reminderCount),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatItem(String label, int value, IconData icon) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.white, size: 22),
-        const SizedBox(height: 6),
-        Text(
-          value.toString(),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 11,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMiniCount(String emoji, int count) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(emoji, style: const TextStyle(fontSize: 18)),
-        const SizedBox(height: 2),
-        Text(
-          count.toString(),
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 14,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTabBar(bool isDark, ThemeData theme) {
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: TabBar(
-        controller: _tabController,
-        isScrollable: false,
-        indicatorSize: TabBarIndicatorSize.tab,
-        indicatorWeight: 3,
-        indicatorColor: theme.primaryColor,
-        labelColor: isDark ? Colors.white : theme.primaryColor,
-        unselectedLabelColor: isDark ? Colors.grey[500] : Colors.grey[600],
-        labelStyle: const TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.bold,
-        ),
-        unselectedLabelStyle: const TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w500,
-        ),
-        tabs: [
-          Tab(
-            icon: const Icon(Icons.apps_rounded, size: 20),
-            text: 'Tất cả',
-          ),
-          Tab(
-            icon: const Icon(Icons.school_rounded, size: 20),
-            text: 'Lớp học',
-          ),
-          Tab(
-            icon: const Icon(Icons.assignment_rounded, size: 20),
-            text: 'Lịch thi',
-          ),
-          Tab(
-            icon: const Icon(Icons.alarm_rounded, size: 20),
-            text: 'Nhắc nhở',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNotificationCard(NotificationHistory notification, bool isDark) {
-    return Dismissible(
-      key: Key(notification.id.toString()),
-      direction: DismissDirection.endToStart,
-      confirmDismiss: (direction) async {
-        final confirm = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
-            ),
-            backgroundColor: isDark ? Colors.grey[850] : Colors.white,
-            contentPadding: const EdgeInsets.all(24),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Colors.red.withOpacity(isDark ? 0.3 : 0.15),
-                        Colors.red.withOpacity(isDark ? 0.2 : 0.1),
-                      ],
-                    ),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.red.withOpacity(0.3),
-                      width: 2,
-                    ),
-                  ),
-                  child: Center(
-                    child: Container(
-                      width: 60,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(isDark ? 0.25 : 0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.delete_outline_rounded,
-                        color: Colors.red,
-                        size: 32,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Xác nhận xóa',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: isDark ? Colors.grey[800] : Colors.grey[100],
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.info_outline_rounded,
-                        size: 22,
-                        color: isDark ? Colors.grey[400] : Colors.grey[600],
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Bạn có chắc muốn xóa thông báo này?',
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: isDark ? Colors.grey[300] : Colors.grey[700],
-                            height: 1.4,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.pop(context, false),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          side: BorderSide(
-                            color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-                            width: 1.5,
-                          ),
-                        ),
-                        icon: Icon(
-                          Icons.close_rounded,
-                          size: 20,
-                          color: isDark ? Colors.grey[300] : Colors.grey[700],
-                        ),
-                        label: Text(
-                          'Hủy',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.grey[300] : Colors.grey[700],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => Navigator.pop(context, true),
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor: Colors.red,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 2,
-                        ),
-                        icon: const Icon(
-                          Icons.delete_rounded,
-                          size: 20,
-                          color: Colors.white,
-                        ),
-                        label: const Text(
-                          'Xóa',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-
-        if (confirm != true) {
-          return false;
-        }
-
-        // 2. Lưu context trước khi await để tránh async gap
-        final BuildContext cardContext = context;
-
-        try {
-          // Gọi service đúng cách (không trả về response)
-          await NotificationHistoryService.deleteNotification(cardContext, notification.id);
-
-          // Chỉ reload và show SnackBar nếu widget vẫn còn mounted
-          await _loadData(force: true);
-          widget.onNotificationChanged?.call();
-
-          if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.check_circle_rounded,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Text(
-                            'Đã xóa thông báo',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  backgroundColor: Colors.green.shade600,
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  margin: const EdgeInsets.all(16),
-                  duration: const Duration(seconds: 3),
-                  elevation: 6,
-                ),
-              );
-            }
-
-          return true; // Cho phép Dismissible xóa item khỏi list
-
-        } catch (e) {
-          print('❌ Error: $e');
-
-          if (mounted) {
-            _showErrorDialog(
-              'Lỗi xóa thông báo',
-              'Không thể xóa thông báo. Vui lòng thử lại.',
-            );
-          }
-
-          return false;
-        }
-      },
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 24),
-        margin: const EdgeInsets.only(bottom: 8),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-            colors: [
-              Colors.red.withOpacity(0.7),
-              Colors.red,
+            if (actionLabel != null) ...[
+              const SizedBox(height: 16),
+              FilledButton.tonal(onPressed: onAction, child: Text(actionLabel)),
             ],
-          ),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.red.withOpacity(0.4),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.delete_rounded,
-                color: Colors.white,
-                size: 28,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Xóa',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            if (secondaryLabel != null) TextButton(onPressed: onSecondary, child: Text(secondaryLabel)),
           ],
         ),
       ),
-      child: Card(
-        elevation: notification.is_read ? 0 : 4,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-        margin: const EdgeInsets.only(bottom: 8),
-        color: notification.is_read
-            ? (isDark ? Colors.grey[850]?.withOpacity(0.3) : Colors.grey[100])
-            : (isDark ? Colors.grey[850] : Colors.white),
-        child: InkWell(
-          // ✅ THAY ĐỔI: Navigation đến màn hình chi tiết
-          onTap: () async {
-            final updatedNotification = await Navigator.push<NotificationHistory>(
-              context,
-              MaterialPageRoute(
-                builder: (_) => NotificationDetailScreen(
-                  notification: notification,
-                  onMarkAsRead: (updatedNotif) {
-                    if (mounted) {
-                      setState(() {
-                        _updateNotificationState(updatedNotif);
-                      });
-                    }
-                  },
-                ),
-              ),
-            );
-
-            if (updatedNotification != null && mounted) {
-              setState(() {
-                _updateNotificationState(updatedNotification);
-              });
-            }
-          },
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              gradient: !notification.is_read
-                  ? LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Theme.of(context).primaryColor.withOpacity(0.05),
-                  Theme.of(context).primaryColor.withOpacity(0.02),
-                ],
-              )
-                  : null,
-              border: !notification.is_read
-                  ? Border.all(
-                color: Theme.of(context).primaryColor.withOpacity(0.4),
-                width: 2,
-              )
-                  : Border.all(
-                color: isDark
-                    ? Colors.grey[800]!
-                    : Colors.grey[200]!,
-                width: 1,
-              ),
-              boxShadow: !notification.is_read
-                  ? [
-                BoxShadow(
-                  color: Theme.of(context).primaryColor.withOpacity(0.15),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ]
-                  : null,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        gradient: !notification.is_read
-                            ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            _getTypeColor(notification.type).withOpacity(0.25),
-                            _getTypeColor(notification.type).withOpacity(0.15),
-                          ],
-                        )
-                            : null,
-                        color: notification.is_read
-                            ? _getTypeColor(notification.type).withOpacity(0.1)
-                            : null,
-                        borderRadius: BorderRadius.circular(14),
-                        border: !notification.is_read
-                            ? Border.all(
-                          color: _getTypeColor(notification.type).withOpacity(0.3),
-                          width: 1.5,
-                        )
-                            : null,
-                      ),
-                      child: Text(
-                        notification.typeEmoji,
-                        style: TextStyle(
-                          fontSize: notification.is_read ? 22 : 26,
-                        ),
-                      ),
-                    ),
-                    if (!notification.is_read)
-                      Positioned(
-                        right: -6,
-                        top: -6,
-                        child: Container(
-                          width: 14,
-                          height: 14,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                Theme.of(context).primaryColor,
-                                Theme.of(context).primaryColor.withValues(alpha: 0.8),
-                              ],
-                            ),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: isDark ? Colors.grey[850]! : Colors.white,
-                              width: 2.5,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Theme.of(context).primaryColor.withValues(alpha:  0.5),
-                                blurRadius: 4,
-                                spreadRadius: 1,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        notification.title,
-                        style: TextStyle(
-                          fontWeight: notification.is_read ? FontWeight.w500 : FontWeight.bold,
-                          fontSize: notification.is_read ? 14 : 15.5,
-                          color: isDark
-                              ? (notification.is_read ? Colors.grey[500] : Colors.white)
-                              : (notification.is_read ? Colors.grey[600] : Colors.black87),
-                          letterSpacing: notification.is_read ? 0 : 0.3,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        notification.body,
-                        style: TextStyle(
-                          color: isDark
-                              ? (notification.is_read ? Colors.grey[700] : Colors.grey[400])
-                              : (notification.is_read ? Colors.grey[500] : Colors.grey[700]),
-                          fontSize: notification.is_read ? 12 : 13,
-                          height: 1.4,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              gradient: !notification.is_read
-                                  ? LinearGradient(
-                                colors: [
-                                  _getTypeColor(notification.type).withOpacity(0.2),
-                                  _getTypeColor(notification.type).withOpacity(0.15),
-                                ],
-                              )
-                                  : null,
-                              color: notification.is_read
-                                  ? _getTypeColor(notification.type).withOpacity(0.1)
-                                  : null,
-                              borderRadius: BorderRadius.circular(8),
-                              border: !notification.is_read
-                                  ? Border.all(
-                                color: _getTypeColor(notification.type).withOpacity(0.3),
-                                width: 1,
-                              )
-                                  : null,
-                            ),
-                            child: Text(
-                              notification.typeLabel,
-                              style: TextStyle(
-                                color: _getTypeColor(notification.type),
-                                fontSize: 11,
-                                fontWeight: notification.is_read ? FontWeight.w600 : FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Icon(
-                            Icons.access_time_rounded,
-                            size: 13,
-                            color: isDark ? Colors.grey[600] : Colors.grey[500],
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            notification.formattedTime,
-                            style: TextStyle(
-                              color: isDark ? Colors.grey[600] : Colors.grey[500],
-                              fontSize: 11,
-                              fontWeight: notification.is_read ? FontWeight.normal : FontWeight.w500,
-                            ),
-                          ),
-                          const Spacer(),
-                          // Icon chỉ báo có thể xem chi tiết
-                          Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            size: 14,
-                            color: isDark ? Colors.grey[600] : Colors.grey[400],
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
-  }
-  Widget _buildEmptyState(bool isDark) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[800] : Colors.grey.shade100,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.notifications_off_rounded,
-              size: 56,
-              color: isDark ? Colors.grey[600] : Colors.grey.shade400,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Không có thông báo',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: isDark ? Colors.grey[400] : Colors.grey.shade700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            _getEmptyMessage(),
-            style: TextStyle(
-              fontSize: 13,
-              color: isDark ? Colors.grey[600] : Colors.grey.shade500,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _getEmptyMessage() {
-    switch (_currentTabIndex) {
-      case 1:
-        return 'Chưa có thông báo lịch học';
-      case 2:
-        return 'Chưa có thông báo lịch thi';
-      case 3:
-        return 'Chưa có thông báo nhắc nhở';
-      default:
-        return 'Chưa có thông báo nào';
-    }
-  }
-
-  Color _getTypeColor(String type) {
-    switch (type) {
-      case 'CLASS':
-        return const Color(0xFF2196F3);
-      case 'EXAM':
-        return const Color(0xFFFF9800);
-      case 'REMINDER':
-        return const Color(0xFF4CAF50);
-      case 'EXAM_ADVANCE':
-        return const Color(0xFFF44336);
-      default:
-        return Colors.grey;
-    }
   }
 }
 
-
-class MarkAllReadDialog extends StatelessWidget {
-  final int unreadCount;
-
-  const MarkAllReadDialog({super.key, required this.unreadCount});
-
-  static Future<bool?> show(BuildContext context, {required int unreadCount}) {
-    return showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      barrierColor: Colors.black.withValues(alpha: 0.6),
-      builder: (_) => MarkAllReadDialog(unreadCount: unreadCount),
-    );
-  }
-
-  /// Dark mode: làm sáng nhẹ + giảm bão hòa để màu không chói, không chìm.
-  static Color _accentFor(Color base, bool isDark) {
-    if (!isDark) return base;
-    final hsl = HSLColor.fromColor(base);
-    return hsl
-        .withLightness(hsl.lightness < 0.62 ? 0.64 : hsl.lightness)
-        .withSaturation(hsl.saturation.clamp(0.4, 0.8))
-        .toColor();
-  }
+/// Tab tự thu nhỏ chữ nếu màn hình hẹp, không bao giờ bị cắt.
+class _FitTab extends StatelessWidget {
+  final String label;
+  const _FitTab(this.label);
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    final accent = _accentFor(theme.primaryColor, isDark);
-    final accentDeep = HSLColor.fromColor(accent)
-        .withLightness((HSLColor.fromColor(accent).lightness - 0.12).clamp(0.2, 0.9))
-        .toColor();
-    final onAccent = ThemeData.estimateBrightnessForColor(accent) == Brightness.dark
-        ? Colors.white
-        : const Color(0xFF111111);
-
-    // Nền trung tính (khớp Colors.grey[850]/[900] của màn hình), không ngả xanh.
-    final dialogBg = isDark ? const Color(0xFF262626) : Colors.white;
-    final titleColor = isDark ? const Color(0xFFF5F5F5) : const Color(0xFF111827);
-    final bodyColor = isDark ? const Color(0xFFA3A3A3) : const Color(0xFF6B7280);
-    final tonalBg = isDark
-        ? Colors.white.withValues(alpha: 0.08)
-        : const Color(0xFFF3F4F6);
-    final tonalFg = isDark ? const Color(0xFFE5E5E5) : const Color(0xFF374151);
-
-    return Dialog(
-      backgroundColor: dialogBg,
-      surfaceTintColor: Colors.transparent,
-      clipBehavior: Clip.antiAlias,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
-      elevation: isDark ? 0 : 8,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(28),
-        side: BorderSide(
-          color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.transparent,
-        ),
-      ),
-      child: Container(
-        // Ánh sáng nhẹ từ màu nhấn ở phía trên
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              accent.withValues(alpha: isDark ? 0.16 : 0.09),
-              dialogBg,
-            ],
-            stops: const [0.0, 0.5],
-          ),
-        ),
-        padding: const EdgeInsets.fromLTRB(24, 32, 24, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Icon: vòng tròn gradient đặc + glow
-            Center(
-              child: Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [accent, accentDeep],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: accent.withValues(alpha: isDark ? 0.40 : 0.35),
-                      blurRadius: 24,
-                      spreadRadius: 1,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Icon(Icons.done_all_rounded, size: 34, color: onAccent),
-              ),
-            ),
-            const SizedBox(height: 22),
-
-            Text(
-              'Đánh dấu tất cả đã đọc?',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.2,
-                color: titleColor,
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            Text(
-              'Tất cả thông báo sẽ được chuyển sang trạng thái đã đọc.\n'
-                  'Bạn vẫn có thể xem lại trong lịch sử.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 14, height: 1.5, color: bodyColor),
-            ),
-
-            if (unreadCount > 0) ...[
-              const SizedBox(height: 16),
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: accent.withValues(alpha: isDark ? 0.14 : 0.10),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.mark_email_unread_rounded, size: 16, color: accent),
-                      const SizedBox(width: 6),
-                      Text(
-                        '$unreadCount thông báo chưa đọc',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: accent,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 26),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    style: TextButton.styleFrom(
-                      backgroundColor: tonalBg,
-                      foregroundColor: tonalFg,
-                      minimumSize: const Size.fromHeight(50),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    child: const Text(
-                      'Hủy',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.pop(context, true),
-                    icon: Icon(Icons.done_all_rounded, size: 20, color: onAccent),
-                    label: Text(
-                      'Xác nhận',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: onAccent,
-                      ),
-                    ),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      backgroundColor: accent,
-                      foregroundColor: onAccent,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Tab(
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Text(label, maxLines: 1, softWrap: false),
+    ),
+  );
 }
-
