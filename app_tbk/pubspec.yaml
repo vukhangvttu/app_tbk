@@ -105,6 +105,8 @@ dependencies:
   shimmer: ^3.0.0
 
 flutter:
+  config:
+    enable-swift-package-manager: false
   assets:
     - assets/translations/
     - assets/images/
