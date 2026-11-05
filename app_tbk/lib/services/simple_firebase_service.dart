@@ -1,21 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import '../firebase_options.dart';
 import 'notification_tracking_service.dart';
 
 // ========== HÀM XỬ LÝ BACKGROUND MESSAGES ==========
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(
-    options: const FirebaseOptions(
-      apiKey: 'AIzaSyBo1emgmzYTujE6mg6meIT-nB26Vr9g9o0',
-      appId: '1:73761905325:android:3a5882bcd0b655945ec424',
-      messagingSenderId: '73761905325',
-      projectId: 'app-tbk-3a077',
-      storageBucket: 'app-tbk-3a077.firebasestorage.app',
-    ),
+    options: DefaultFirebaseOptions.currentPlatform,
   );
   print('📱 Nhận được notification trong background: ${message.notification?.title}');
   print('📦 Dữ liệu Notification: ${message.notification?.toMap()}');
@@ -136,15 +132,8 @@ class SimpleFirebaseService {
     try {
       print('🔥 Bắt đầu khởi tạo Firebase...');
 
-      // Khởi tạo Firebase với FirebaseOptions thủ công
       await Firebase.initializeApp(
-        options: const FirebaseOptions(
-          apiKey: 'AIzaSyBo1emgmzYTujE6mg6meIT-nB26Vr9g9o0',
-          appId: '1:73761905325:android:3a5882bcd0b655945ec424',
-          messagingSenderId: '73761905325',
-          projectId: 'app-tbk-3a077',
-          storageBucket: 'app-tbk-3a077.firebasestorage.app',
-        ),
+        options: DefaultFirebaseOptions.currentPlatform,
       );
       print('✅ Firebase initialized');
 
@@ -193,11 +182,34 @@ class SimpleFirebaseService {
   // ========== LẤY FCM TOKEN ==========
   Future<void> _getFCMToken() async {
     try {
+      if (Platform.isIOS) {
+        print('🍎 Waiting for APNs token on iOS...');
+        String? apnsToken = await _messaging!.getAPNSToken();
+        int retry = 0;
+        while (apnsToken == null && retry < 10) {
+          await Future.delayed(const Duration(seconds: 1));
+          apnsToken = await _messaging!.getAPNSToken();
+          retry++;
+        }
+        if (apnsToken != null) {
+          print('✅ APNs token received: $apnsToken');
+        } else {
+          print('⚠️ APNs token is null on iOS. FCM token might fail.');
+        }
+      }
+
       _fcmToken = await _messaging!.getToken();
       print('📱 FCM Token: $_fcmToken');
 
       // Lắng nghe khi token thay đổi
       _messaging!.onTokenRefresh.listen((newToken) {
+        print('🔄 Token mới: $newToken');
+        _fcmToken = newToken;
+      });
+    } catch (e) {
+      print('❌ Lỗi lấy FCM token: $e');
+    }
+  }
         print('🔄 Token mới: $newToken');
         _fcmToken = newToken;
       });
