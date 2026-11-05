@@ -87,5 +87,23 @@
 		<string>fetch</string>
 		<string>remote-notification</string>
 	</array>
+
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.73761905325-g3jhur76dkiok5qkigkbfjvgbh9i06ho</string>
+			</array>
+		</dict>
+	</array>
+
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
