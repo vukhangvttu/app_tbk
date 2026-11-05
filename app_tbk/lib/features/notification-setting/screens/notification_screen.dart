@@ -75,6 +75,8 @@ const _tintBlue = _Tint(Color(0xFF2F6BFF), Color(0xFF6C9BFF));
 const _tintOrange = _Tint(Color(0xFFE8801A), Color(0xFFFFA94D));
 const _tintPurple = _Tint(Color(0xFF7C5CE6), Color(0xFFB39DFF));
 const _tintGreen = _Tint(Color(0xFF0E9F73), Color(0xFF3DDBA4));
+const _tintTeal = _Tint(Color(0xFF0891B2), Color(0xFF38BDF8));
+const _tintRose = _Tint(Color(0xFFE11D48), Color(0xFFFB7185));
 
 // ───────────────────────── Màn hình ─────────────────────────
 
@@ -98,8 +100,9 @@ class _NotificationSettingsScreenState
   bool _isSaving = false;
   bool _hasUnsavedChanges = false;
 
-  static const List<int> _reminderMinutePresets = [0, 15, 30, 60, 90, 120];
-  static const List<int> _examDayPresets = [0, 1, 2, 3, 5, 7];
+  static const List<int> _reminderMinutePresets = [15, 30, 60, 90, 120, 180];
+  static const List<int> _examDayPresets = [1, 2, 3, 5, 7];
+  static const List<int> _attendanceMinutePresets = [3, 5, 7, 10, 15];
 
   final List<Map<String, String>> _soundOptions = [
     {
@@ -155,9 +158,20 @@ class _NotificationSettingsScreenState
       debugPrint(
           '✅ Đã load Settings: ${settings != null ? jsonEncode(settings.toJson()) : "NULL"}');
 
+      final loaded = settings ?? _service.defaultSettings;
+      final effectiveSettings = loaded.copyWith(
+        reminderMinutes: loaded.reminderMinutes == 0 ? 30 : loaded.reminderMinutes,
+        examReminderDays: loaded.examReminderDays == 0 ? 3 : loaded.examReminderDays,
+        examHour: (loaded.isDefaultSettings || loaded.examHour == 6) ? 8 : loaded.examHour,
+        attendanceInMinutes:
+        loaded.attendanceInMinutes <= 0 ? 5 : loaded.attendanceInMinutes,
+        attendanceOutMinutes:
+        loaded.attendanceOutMinutes <= 0 ? 5 : loaded.attendanceOutMinutes,
+      );
+
       if (!mounted) return;
       setState(() {
-        _settings = settings ?? _service.defaultSettings;
+        _settings = effectiveSettings;
         _loading = false;
         _hasUnsavedChanges = false;
       });
@@ -237,6 +251,10 @@ class _NotificationSettingsScreenState
         'reminder_minutes': _settings!.reminderMinutes,
         'exam_reminder_days': _settings!.examReminderDays,
         'notification_sound': _settings!.notificationSound,
+        'attendance_in_enabled': _settings!.attendanceInEnabled,
+        'attendance_in_minutes': _settings!.attendanceInMinutes,
+        'attendance_out_enabled': _settings!.attendanceOutEnabled,
+        'attendance_out_minutes': _settings!.attendanceOutMinutes,
       };
 
       debugPrint('Body gửi đi: ${jsonEncode(payload)}');
@@ -303,13 +321,6 @@ class _NotificationSettingsScreenState
     if (picked != null && mounted) onPicked(picked);
   }
 
-  Future<void> _selectScheduleTime() => _pickTime(
-    hour: _settings!.scheduleHour,
-    minute: _settings!.scheduleMinute,
-    onPicked: (t) => _onSettingsChanged(_settings!
-        .copyWith(scheduleHour: t.hour, scheduleMinute: t.minute)),
-  );
-
   Future<void> _selectExamTime() => _pickTime(
     hour: _settings!.examHour,
     minute: _settings!.examMinute,
@@ -328,7 +339,7 @@ class _NotificationSettingsScreenState
 
   Future<void> _playSoundPreview(String soundId) async {
     if (soundId == 'system') return;
-    
+
     _initAudioPlayerIfNeeded();
 
     if (_playingSound.value == soundId) {
@@ -394,17 +405,31 @@ class _NotificationSettingsScreenState
                 tint: _tintBlue,
                 icon: Icons.menu_book_rounded,
                 title: 'Lịch học',
-                subtitle: 'Tổng hợp các tiết học trong ngày',
+                subtitle: 'Nhắc trước mỗi tiết học',
                 enabled: masterOn,
                 switchValue: s.scheduleEnabled && masterOn,
                 onSwitch: (v) =>
                     _onSettingsChanged(s.copyWith(scheduleEnabled: v)),
-                showBody: s.scheduleEnabled && masterOn,
-                body: _TimeRow(
+              ),
+              const SizedBox(height: 12),
+
+              // Nhắc trước bao lâu
+              _FeatureCard(
+                p: p,
+                tint: _tintPurple,
+                icon: Icons.alarm_rounded,
+                title: 'Nhắc trước bao lâu',
+                subtitle: 'Áp dụng cho cả tiết học và buổi thi',
+                enabled: masterOn && (s.scheduleEnabled || s.examEnabled),
+                showBody: true,
+                body: _PillGroup(
                   p: p,
-                  label: 'Giờ nhắc mỗi ngày',
-                  time: s.scheduleTimeString,
-                  onTap: _selectScheduleTime,
+                  options:
+                  _withCurrent(_reminderMinutePresets, s.reminderMinutes),
+                  selected: s.reminderMinutes,
+                  format: _formatMinutes,
+                  onSelected: (v) =>
+                      _onSettingsChanged(s.copyWith(reminderMinutes: v)),
                 ),
               ),
               const SizedBox(height: 12),
@@ -437,7 +462,7 @@ class _NotificationSettingsScreenState
                       p: p,
                       options: _withCurrent(_examDayPresets, s.examReminderDays),
                       selected: s.examReminderDays,
-                      format: (d) => d == 0 ? 'Tắt' : '$d ngày',
+                      format: (d) => '$d ngày',
                       onSelected: (v) => _onSettingsChanged(
                           s.copyWith(examReminderDays: v)),
                     ),
@@ -446,23 +471,64 @@ class _NotificationSettingsScreenState
               ),
               const SizedBox(height: 12),
 
-              // Nhắc trước giờ
+              // Điểm danh vào
               _FeatureCard(
                 p: p,
-                tint: _tintPurple,
-                icon: Icons.alarm_rounded,
-                title: 'Nhắc trước giờ bắt đầu',
-                subtitle: 'Thêm một thông báo ngay trước tiết học hoặc buổi thi',
-                enabled: masterOn && (s.scheduleEnabled || s.examEnabled),
-                showBody: true,
-                body: _PillGroup(
-                  p: p,
-                  options:
-                  _withCurrent(_reminderMinutePresets, s.reminderMinutes),
-                  selected: s.reminderMinutes,
-                  format: _formatMinutes,
-                  onSelected: (v) =>
-                      _onSettingsChanged(s.copyWith(reminderMinutes: v)),
+                tint: _tintTeal,
+                icon: Icons.login_rounded,
+                title: 'Điểm danh vào',
+                subtitle: 'Nhắc điểm danh sau giờ bắt đầu tiết học',
+                enabled: masterOn,
+                switchValue: s.attendanceInEnabled && masterOn,
+                onSwitch: (v) =>
+                    _onSettingsChanged(s.copyWith(attendanceInEnabled: v)),
+                showBody: s.attendanceInEnabled && masterOn,
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _FieldLabel(p: p, text: 'Nhắc sau khi tiết học bắt đầu'),
+                    const SizedBox(height: 10),
+                    _PillGroup(
+                      p: p,
+                      options: _withCurrent(
+                          _attendanceMinutePresets, s.attendanceInMinutes),
+                      selected: s.attendanceInMinutes,
+                      format: _formatMinutes,
+                      onSelected: (v) => _onSettingsChanged(
+                          s.copyWith(attendanceInMinutes: v)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Điểm danh ra
+              _FeatureCard(
+                p: p,
+                tint: _tintRose,
+                icon: Icons.logout_rounded,
+                title: 'Điểm danh ra',
+                subtitle: 'Nhắc điểm danh sau giờ kết thúc tiết học',
+                enabled: masterOn,
+                switchValue: s.attendanceOutEnabled && masterOn,
+                onSwitch: (v) =>
+                    _onSettingsChanged(s.copyWith(attendanceOutEnabled: v)),
+                showBody: s.attendanceOutEnabled && masterOn,
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _FieldLabel(p: p, text: 'Nhắc sau khi tiết học kết thúc'),
+                    const SizedBox(height: 10),
+                    _PillGroup(
+                      p: p,
+                      options: _withCurrent(
+                          _attendanceMinutePresets, s.attendanceOutMinutes),
+                      selected: s.attendanceOutMinutes,
+                      format: _formatMinutes,
+                      onSelected: (v) => _onSettingsChanged(
+                          s.copyWith(attendanceOutMinutes: v)),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 12),
@@ -509,7 +575,6 @@ class _NotificationSettingsScreenState
   }
 
   String _formatMinutes(int m) {
-    if (m == 0) return 'Tắt';
     if (m >= 60 && m % 60 == 0) return '${m ~/ 60} giờ';
     return '$m phút';
   }
@@ -671,7 +736,12 @@ class _Hero extends StatelessWidget {
 
     final chips = <Widget>[
       if (on && s.scheduleEnabled)
-        _HeroChip(icon: Icons.menu_book_rounded, text: s.scheduleTimeString),
+        _HeroChip(
+          icon: Icons.menu_book_rounded,
+          text: s.reminderMinutes == 0
+              ? 'Lịch học'
+              : 'Học: trước ${s.reminderMinutes} phút',
+        ),
       if (on && s.examEnabled)
         _HeroChip(
           icon: Icons.edit_calendar_rounded,
@@ -679,10 +749,15 @@ class _Hero extends StatelessWidget {
               ? s.examTimeString
               : '${s.examTimeString}, trước ${s.examReminderDays} ngày',
         ),
-      if (on && s.reminderMinutes > 0 && (s.scheduleEnabled || s.examEnabled))
+      if (on && s.attendanceInEnabled)
         _HeroChip(
-          icon: Icons.alarm_rounded,
-          text: 'Báo trước ${s.reminderMinutes} phút',
+          icon: Icons.login_rounded,
+          text: 'Vào: sau ${s.attendanceInMinutes} phút',
+        ),
+      if (on && s.attendanceOutEnabled)
+        _HeroChip(
+          icon: Icons.logout_rounded,
+          text: 'Ra: sau ${s.attendanceOutMinutes} phút',
         ),
     ];
 
@@ -775,7 +850,7 @@ class _Hero extends StatelessWidget {
                   const SizedBox(height: 16),
                   if (chips.isEmpty)
                     Text(
-                      'Chưa có nhắc nhở nào. Bật lịch học hoặc lịch thi bên dưới.',
+                      'Chưa có nhắc nhở nào. Bật lịch học, lịch thi hoặc điểm danh bên dưới.',
                       style: TextStyle(fontSize: 13.5, color: sub),
                     )
                   else

@@ -68,7 +68,7 @@ class _AbsenceWarningCardState extends State<AbsenceWarningCard> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final warningSubjects =
-    _subjects.where((s) => s.isBanned || s.isWarning).toList();
+    _subjects.where((s) => s.isBanned || s.isWarning || s.absentPeriods > 0).toList();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 24),
@@ -285,6 +285,65 @@ class _AbsenceWarningCardState extends State<AbsenceWarningCard> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final base = isDark ? Colors.grey[800]! : Colors.grey[300]!;
 
+    Widget buildSkeletonItem() {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 4.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  width: 160,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: base,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                Container(
+                  width: 64,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: base,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Container(
+              height: 8,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: base,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              height: 13,
+              width: 150,
+              decoration: BoxDecoration(
+                color: base,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              height: 12,
+              width: 230,
+              decoration: BoxDecoration(
+                color: base,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Shimmer.fromColors(
       baseColor: base,
       highlightColor: isDark ? Colors.grey[700]! : Colors.grey[100]!,
@@ -297,31 +356,46 @@ class _AbsenceWarningCardState extends State<AbsenceWarningCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Header
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Container(width: 24, height: 24, color: base),
-                  const SizedBox(width: 8),
-                  Container(width: 180, height: 20, color: base),
+                  Row(
+                    children: [
+                      Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: base,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        width: 160,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: base,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: base,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                height: 76,
-                decoration: BoxDecoration(
-                  color: base,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                height: 76,
-                decoration: BoxDecoration(
-                  color: base,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
+              const SizedBox(height: 16),
+              // List item skeletons matching real items
+              buildSkeletonItem(),
+              const Divider(height: 16, thickness: 0.5),
+              buildSkeletonItem(),
             ],
           ),
         ),

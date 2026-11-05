@@ -43,13 +43,17 @@ class SmartNotificationService {
     enabled: false, // TẮT mặc định
     scheduleEnabled: true,
     scheduleHour: 8,
-    scheduleMinute: 30,
+    scheduleMinute: 0,
     examEnabled: true,
-    examHour: 6,
+    examHour: 8,
     examMinute: 0,
     reminderMinutes: 30,
     examReminderDays: 3,
     isDefaultSettings: true,
+      attendanceInEnabled: true,
+      attendanceInMinutes: 5,
+      attendanceOutEnabled: true,
+      attendanceOutMinutes: 5
   );
 
   static Future<AppNotificationSettings?> getSettings(String mssv) async {
@@ -276,16 +280,18 @@ class SmartNotificationService {
   void _handleNotificationTap(dynamic response) {
     String? payload;
     if (response is NotificationResponse) {
+      if (response.payload == null || response.payload!.trim().isEmpty) return;
       payload = response.payload;
     } else if (response is RemoteMessage) {
+      if (response.data.isEmpty && response.notification == null) return;
       payload = jsonEncode(response.data);
     }
 
-    if (payload != null) {
+    if (payload != null && payload.trim().isNotEmpty) {
       try {
         final data = jsonDecode(payload);
-        print('👆 Notification tapped: ${data['type']}');
-        if (data is Map<String, dynamic>) {
+        if (data is Map<String, dynamic> && data.isNotEmpty) {
+          print('👆 Notification tapped: ${data['type']}');
           final notificationId = NotificationTrackingService.extractNotificationId(data);
           if (notificationId != null) {
             NotificationTrackingService.reportOpened(notificationId);

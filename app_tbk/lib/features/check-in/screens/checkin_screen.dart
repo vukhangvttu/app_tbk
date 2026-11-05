@@ -760,9 +760,11 @@ class _CheckInScreenState extends State<CheckInScreen>
             style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
         centerTitle: true,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
         iconTheme: const IconThemeData(color: Colors.white),
         backgroundColor: Colors.transparent,
-        flexibleSpace: DecoratedBox(
+        flexibleSpace: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: theme.brightness == Brightness.dark
@@ -866,8 +868,30 @@ class _CheckInScreenState extends State<CheckInScreen>
         break;
     }
 
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Check-in Sự kiện')),
+      appBar: AppBar(
+        title: const Text('Check-in Sự kiện',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+        centerTitle: true,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
+        iconTheme: const IconThemeData(color: Colors.white),
+        backgroundColor: Colors.transparent,
+        flexibleSpace: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: theme.brightness == Brightness.dark
+                  ? [Colors.blue.shade900, Colors.purple.shade900]
+                  : [Colors.blue.shade600, Colors.purple.shade600],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
+      ),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),

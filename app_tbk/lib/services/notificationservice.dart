@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../features/auth/services/auth_service.dart';
 import '../utils/global_keys.dart';
 import 'notification_tracking_service.dart';
+import 'simple_firebase_service.dart';
 
 class NotificationServices {
   static final NotificationServices _instance = NotificationServices._internal();
@@ -86,7 +87,7 @@ class NotificationServices {
 
       // ✅ Listen for foreground messages
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-        print('📬 Received foreground message: ${message.notification?.title}');
+        print('📬 Received foreground message in NotificationServices: ${message.notification?.title}');
         final notificationId = NotificationTrackingService.extractNotificationId(message.data);
         if (notificationId != null) {
           NotificationTrackingService.reportDelivered(notificationId);

@@ -4,6 +4,7 @@ import 'package:app_tbk/config/api_constants.dart';
 import 'package:app_tbk/config/api_notification.dart';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/auth/services/post_login_initializer.dart';
+import 'package:app_tbk/services/next_class_widget_service.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -159,6 +160,16 @@ class AuthService {
     } catch (e) {
       if (e is NoInternetException) rethrow;
       final errStr = e.toString().toLowerCase();
+      if (errStr.contains('badpadding') || 
+          errStr.contains('bad_decrypt') || 
+          errStr.contains('mac check failed') ||
+          errStr.contains('invalidkeyexception')) {
+        print('🧹 Lỗi keystore phát hiện khi login, tiến hành xóa storage...');
+        try {
+          await _storage.deleteAll();
+        } catch (_) {}
+        throw Exception('Thiết lập bảo mật đã thay đổi. Vui lòng bấm Đăng nhập lại.');
+      }
       if (errStr.contains('socketexception') ||
           errStr.contains('clientexception') ||
           errStr.contains('failed host lookup') ||
@@ -502,7 +513,13 @@ class AuthService {
   static Future<void> logout({bool notifyBackend = true}) async {
     try {
       if (notifyBackend) {
-        final deviceId = await _storage.read(key: _keyDeviceId);
+        String? deviceId;
+        try {
+          deviceId = await _storage.read(key: _keyDeviceId);
+        } catch (e) {
+          print('⚠️ Không thể đọc device_id khi logout: $e');
+        }
+        
         if (deviceId != null) {
           try {
             await authenticatedRequestLichSinhVien(
@@ -520,12 +537,11 @@ class AuthService {
 
       // Xóa tất cả dữ liệu local
       _lastRefreshTime = null;
-      await _storage.delete(key: _keyAccessToken);
-      await _storage.delete(key: _keyRefreshToken);
-      await _storage.delete(key: _keyDeviceId);
-      await _storage.delete(key: _keyMssv);
-      await _storage.delete(key: _keyIdSinhVien);
-      await _storage.delete(key: _keyUserId);
+      try {
+        await _storage.deleteAll();
+      } catch (e) {
+        print('⚠️ Lỗi khi xóa secure storage: $e');
+      }
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('login_timestamp');
@@ -534,6 +550,7 @@ class AuthService {
       await prefs.remove('biometric_enabled');
 
       PostLoginInitializer.reset();
+      await NextClassWidgetService.xoa();
 
       print('✅ Đăng xuất thành công');
     } catch (e) {
@@ -582,6 +599,11 @@ class AuthService {
       final requestHeaders = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
+        if (method.toUpperCase() == 'GET') ...{
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
         ...?headers,
       };
 
@@ -650,6 +672,16 @@ class AuthService {
     } catch (e) {
       if (e is NoInternetException) rethrow;
       final errStr = e.toString().toLowerCase();
+      if (errStr.contains('badpadding') || 
+          errStr.contains('bad_decrypt') || 
+          errStr.contains('mac check failed') ||
+          errStr.contains('invalidkeyexception')) {
+        print('🧹 Lỗi keystore phát hiện khi login, tiến hành xóa storage...');
+        try {
+          await _storage.deleteAll();
+        } catch (_) {}
+        throw Exception('Thiết lập bảo mật đã thay đổi. Vui lòng bấm Đăng nhập lại.');
+      }
       if (errStr.contains('socketexception') ||
           errStr.contains('clientexception') ||
           errStr.contains('failed host lookup') ||
@@ -692,6 +724,11 @@ class AuthService {
       final url = Uri.parse('${ApiConstants.baseUrl}$endpoint');
       final requestHeaders = {
         'Authorization': 'Bearer $accessToken',
+        if (method.toUpperCase() == 'GET') ...{
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
         ...?headers,
       };
 
@@ -788,6 +825,16 @@ class AuthService {
     } catch (e) {
       if (e is NoInternetException) rethrow;
       final errStr = e.toString().toLowerCase();
+      if (errStr.contains('badpadding') || 
+          errStr.contains('bad_decrypt') || 
+          errStr.contains('mac check failed') ||
+          errStr.contains('invalidkeyexception')) {
+        print('🧹 Lỗi keystore phát hiện khi login, tiến hành xóa storage...');
+        try {
+          await _storage.deleteAll();
+        } catch (_) {}
+        throw Exception('Thiết lập bảo mật đã thay đổi. Vui lòng bấm Đăng nhập lại.');
+      }
       if (errStr.contains('socketexception') ||
           errStr.contains('clientexception') ||
           errStr.contains('failed host lookup') ||
@@ -876,6 +923,18 @@ class AuthService {
       return true;
     } catch (e) {
       print('❌ Lỗi kiểm tra token: $e');
+      final errStr = e.toString();
+      if (errStr.contains('BadPadding') || 
+          errStr.contains('BAD_DECRYPT') || 
+          errStr.contains('MAC check failed') ||
+          errStr.contains('InvalidKeyException')) {
+        print('🧹 Phát hiện lỗi keystore, đang xóa toàn bộ storage...');
+        try {
+          await _storage.deleteAll();
+        } catch (e2) {
+          print('❌ Lỗi khi xóa storage: $e2');
+        }
+      }
       return false;
     }
   }

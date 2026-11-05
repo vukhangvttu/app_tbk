@@ -80,19 +80,15 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
 
     try {
       await ProfileService.submitFeedback(
-
         loaiPhanHoi: _selectedCategory,
         noiDung: _feedbackController.text.trim(),
         hinhAnh: _selectedImages,
       );
 
-      // Chỉ thực hiện các hành động UI nếu widget vẫn còn mounted
       if (!mounted) return;
 
-      // Đóng màn hình feedback
       Navigator.pop(context);
 
-      // Hiển thị thông báo thành công
       _showElegantSnackBar(
         context: context,
         message: 'Cảm ơn bạn đã gửi phản hồi!',
@@ -100,14 +96,12 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
         isError: false,
       );
 
-      // Reset form sau khi gửi thành công (tùy chọn, khuyến khích để trải nghiệm tốt hơn)
       _feedbackController.clear();
       setState(() {
         _selectedImages.clear();
         _selectedCategory = 'Góp ý chung';
       });
     } catch (e) {
-      // Bắt lỗi từ service (đã được throw Exception với message rõ ràng)
       if (!mounted) return;
 
       String errorMessage = e.toString().replaceFirst('Exception: ', '').trim();
@@ -122,7 +116,6 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
         isError: true,
       );
     } finally {
-      // Luôn tắt loading, kể cả khi thành công hay thất bại
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -150,7 +143,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
             boxShadow: [
               BoxShadow(
                 color: (isError ? const Color(0xFFDC2626) : const Color(0xFF10B981))
-                    .withOpacity(0.3),
+                    .withValues(alpha: 0.3),
                 blurRadius: 12,
                 offset: const Offset(0, 4),
               ),
@@ -162,7 +155,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
+                  color: Colors.white.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: Colors.white, size: 22),
@@ -185,7 +178,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                     Text(
                       message,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.95),
+                        color: Colors.white.withValues(alpha: 0.95),
                         fontSize: 14,
                       ),
                     ),
@@ -210,17 +203,28 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
+    final primaryColor = theme.primaryColor;
+    final titleColor = isDark ? Colors.white : Colors.black87;
+    final subTitleColor = isDark ? const Color(0xFF94A3B8) : Colors.grey[600];
+    final sectionLabelColor = isDark ? const Color(0xFFE2E8F0) : Colors.grey[800];
+    final cardBgColor = isDark ? const Color(0xFF1E293B) : Colors.grey[50];
+    final cardBorderColor = isDark ? const Color(0xFF334155) : Colors.grey[300]!;
+
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text(
+        title: Text(
           'Gửi phản hồi',
-          style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: -0.5),
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.5,
+            color: titleColor,
+          ),
         ),
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+          icon: Icon(Icons.arrow_back_ios_new, size: 20, color: titleColor),
           onPressed: () => Navigator.pop(context),
         ),
       ),
@@ -229,31 +233,33 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            // Header
+            // Header Card
             Container(
               padding: const EdgeInsets.all(20),
               margin: const EdgeInsets.only(bottom: 24),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
-                    theme.primaryColor.withOpacity(0.1),
-                    theme.primaryColor.withOpacity(0.05),
+                    primaryColor.withValues(alpha: isDark ? 0.2 : 0.1),
+                    primaryColor.withValues(alpha: isDark ? 0.1 : 0.05),
                   ],
                 ),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: theme.primaryColor.withOpacity(0.2)),
+                border: Border.all(
+                  color: primaryColor.withValues(alpha: isDark ? 0.3 : 0.2),
+                ),
               ),
               child: Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: theme.primaryColor.withOpacity(0.15),
+                      color: primaryColor.withValues(alpha: isDark ? 0.25 : 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
                       Icons.feedback_rounded,
-                      color: theme.primaryColor,
+                      color: isDark ? Colors.white : primaryColor,
                       size: 28,
                     ),
                   ),
@@ -267,7 +273,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.white : Colors.black87,
+                            color: titleColor,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -275,7 +281,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                           'Giúp chúng tôi cải thiện ứng dụng',
                           style: TextStyle(
                             fontSize: 13,
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
+                            color: subTitleColor,
                           ),
                         ),
                       ],
@@ -291,18 +297,16 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: isDark ? Colors.grey[300] : Colors.grey[800],
+                color: sectionLabelColor,
               ),
             ),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E293B) : Colors.grey[50],
+                color: cardBgColor,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isDark ? const Color(0xFF334155) : Colors.grey[300]!,
-                ),
+                border: Border.all(color: cardBorderColor),
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
@@ -310,21 +314,26 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                   isExpanded: true,
                   icon: Icon(
                     Icons.keyboard_arrow_down_rounded,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
+                    color: isDark ? const Color(0xFF94A3B8) : Colors.grey[600],
                   ),
                   style: TextStyle(
                     fontSize: 15,
-                    color: isDark ? Colors.white : Colors.black87,
+                    color: titleColor,
                   ),
                   dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
                   items: _categories.map((category) {
                     return DropdownMenuItem(
                       value: category,
-                      child: Text(category),
+                      child: Text(
+                        category,
+                        style: TextStyle(color: titleColor),
+                      ),
                     );
                   }).toList(),
                   onChanged: (value) {
-                    setState(() => _selectedCategory = value!);
+                    if (value != null) {
+                      setState(() => _selectedCategory = value);
+                    }
                   },
                 ),
               ),
@@ -337,7 +346,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: isDark ? Colors.grey[300] : Colors.grey[800],
+                color: sectionLabelColor,
               ),
             ),
             const SizedBox(height: 8),
@@ -356,30 +365,29 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               },
               style: TextStyle(
                 fontSize: 15,
-                color: isDark ? Colors.white : Colors.black87,
+                color: titleColor,
               ),
               decoration: InputDecoration(
                 hintText: 'Chia sẻ ý kiến, góp ý hoặc báo lỗi của bạn...',
                 hintStyle: TextStyle(
-                  color: isDark ? Colors.grey[600] : Colors.grey[400],
+                  color: isDark ? const Color(0xFF64748B) : Colors.grey[400],
+                ),
+                counterStyle: TextStyle(
+                  color: subTitleColor,
                 ),
                 filled: true,
-                fillColor: isDark ? const Color(0xFF1E293B) : Colors.grey[50],
+                fillColor: cardBgColor,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(
-                    color: isDark ? const Color(0xFF334155) : Colors.grey[300]!,
-                  ),
+                  borderSide: BorderSide(color: cardBorderColor),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(
-                    color: isDark ? const Color(0xFF334155) : Colors.grey[300]!,
-                  ),
+                  borderSide: BorderSide(color: cardBorderColor),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: theme.primaryColor, width: 2),
+                  borderSide: BorderSide(color: primaryColor, width: 2),
                 ),
                 errorBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -396,7 +404,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: isDark ? Colors.grey[300] : Colors.grey[800],
+                color: sectionLabelColor,
               ),
             ),
             const SizedBox(height: 8),
@@ -424,7 +432,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               'Tối đa 5 hình ảnh • PNG, JPG, JPEG',
               style: TextStyle(
                 fontSize: 12,
-                color: isDark ? Colors.grey[500] : Colors.grey[500],
+                color: subTitleColor,
               ),
             ),
             const SizedBox(height: 32),
@@ -435,9 +443,11 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _submitFeedback,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.primaryColor,
+                  backgroundColor: primaryColor,
                   foregroundColor: Colors.white,
-                  disabledBackgroundColor: theme.primaryColor.withOpacity(0.6),
+                  disabledBackgroundColor: primaryColor.withValues(
+                    alpha: isDark ? 0.35 : 0.6,
+                  ),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -445,27 +455,27 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                 ),
                 child: _isLoading
                     ? const SizedBox(
-                  height: 20,
-                  width: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                )
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
                     : const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.send_rounded, size: 20),
-                    SizedBox(width: 8),
-                    Text(
-                      'Gửi phản hồi',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.send_rounded, size: 20),
+                          SizedBox(width: 8),
+                          Text(
+                            'Gửi phản hồi',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
               ),
             ),
           ],
@@ -499,7 +509,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
             child: Container(
               padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
+                color: Colors.black.withValues(alpha: 0.6),
                 shape: BoxShape.circle,
               ),
               child: const Icon(
@@ -515,6 +525,8 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
   }
 
   Widget _buildAddImageButton(bool isDark) {
+    final iconTextColor = isDark ? const Color(0xFF94A3B8) : Colors.grey[500];
+
     return GestureDetector(
       onTap: _pickImages,
       child: Container(
@@ -533,7 +545,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
           children: [
             Icon(
               Icons.add_photo_alternate_rounded,
-              color: isDark ? Colors.grey[600] : Colors.grey[400],
+              color: iconTextColor,
               size: 32,
             ),
             const SizedBox(height: 4),
@@ -541,7 +553,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
               'Thêm ảnh',
               style: TextStyle(
                 fontSize: 12,
-                color: isDark ? Colors.grey[600] : Colors.grey[500],
+                color: iconTextColor,
               ),
             ),
           ],

@@ -42,21 +42,12 @@ class PostLoginInitializer {
       await _saveMSSV(mssv);
     }
 
-    // Kiểm tra xem đã từng init thành công trong phiên đăng nhập này chưa
+    // Kiểm tra xem đã từng hiện thông báo thành công chưa
     final prefs = await SharedPreferences.getInstance();
-    final bool alreadyInitialized = prefs.getBool(_prefKeyInitialized) ?? false;
     final bool alreadyShownMessage = prefs.getBool(_prefKeyShownMessage) ?? false;
-
     _hasShownSuccessMessage = alreadyShownMessage;
 
-    if (alreadyInitialized) {
-      debugPrint('✅ Services were initialized before (from previous session) - skipping heavy init');
-      _isInitialized = true;
-      _isInitializing = false;
-      return;
-    }
-
-    // Chưa từng init → kích hoạt chạy ngầm không await
+    // Kích hoạt chạy ngầm đăng ký dịch vụ cho phiên làm việc mới
     _initServicesInBackground(context, prefs);
   }
 

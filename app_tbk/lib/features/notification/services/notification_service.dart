@@ -99,6 +99,7 @@ class NotificationHistoryService {
       final List<dynamic> jsonData = rawData;
       final notifications = jsonData
           .map((json) => NotificationHistory.fromJson(Map<String, dynamic>.from(json)))
+          .where((n) => n.title.trim().isNotEmpty || n.body.trim().isNotEmpty)
           .toList();
 
       // Sắp xếp mới nhất trước

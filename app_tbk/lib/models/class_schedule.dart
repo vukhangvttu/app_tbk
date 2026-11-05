@@ -9,6 +9,7 @@ class LopHoc {
   final String hoTen;
   final String tenPhong;
   final int maNhom;
+  final String tenNhom;
   final int soTiet;
   final String phanBo;
   final DateTime ngayBd;
@@ -26,6 +27,7 @@ class LopHoc {
     required this.hoTen,
     required this.tenPhong,
     required this.maNhom,
+    required this.tenNhom,
     required this.soTiet,
     required this.phanBo,
     required this.ngayBd,
@@ -45,6 +47,7 @@ class LopHoc {
       hoTen: (json['HOTEN'] as String?)?.trim() ?? '',
       tenPhong: (json['TENPHONG'] as String?)?.trim() ?? '',
       maNhom: json['manhom'] ?? 0,
+      tenNhom: json['tennhom'] ?? '',
       soTiet: json['SOTIET'] ?? 0,
       phanBo: json['PHANBO'] ?? '',
       ngayBd: _phanTichNgay(json['NGAYBD']),

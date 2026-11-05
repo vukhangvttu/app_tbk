@@ -2,10 +2,12 @@ import 'dart:async';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:app_tbk/features/notification/screens/notification_detail_screen.dart';
 import 'package:app_tbk/features/notification/services/notification_service.dart';
+import 'package:app_tbk/features/notification/utils/app_dialogs.dart';
 import 'package:app_tbk/features/notification/utils/notification_filter.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:app_tbk/features/notification/widgets/clear_all_dialog.dart';
+import 'package:app_tbk/services/simple_firebase_service.dart';
 import 'package:shimmer/shimmer.dart';
 
 // ─────────────────────────────── MODEL ───────────────────────────────
@@ -21,6 +23,11 @@ class NotificationHistory implements FilterableNotification {
   @override
   final String? subject;
 
+  // MỚI
+  final String? attachmentUrl;
+  final String? attachmentType;
+  final String? attachmentName;
+
   NotificationHistory({
     required this.id,
     required this.mssv,
@@ -30,6 +37,9 @@ class NotificationHistory implements FilterableNotification {
     required this.timestamp,
     required this.is_read,
     this.subject,
+    this.attachmentUrl,
+    this.attachmentType,
+    this.attachmentName,
   });
 
   factory NotificationHistory.fromJson(Map<String, dynamic> json) {
@@ -51,8 +61,22 @@ class NotificationHistory implements FilterableNotification {
       timestamp: _parseTimestamp(json),
       is_read: read == true || read == 1 || read?.toString() == 'true',
       subject: _readSubject(json),
+      attachmentUrl: _optStr(json, const ['attachmentUrl', 'AttachmentURL', 'AttachmentUrl', 'attachment_url']),
+      attachmentType: _optStr(json, const ['attachmentType', 'AttachmentType', 'attachment_type']),
+      attachmentName: _optStr(json, const ['attachmentName', 'AttachmentName', 'attachment_name']),
     );
   }
+
+  /// Trả null nếu thiếu / rỗng / chuỗi "null".
+  static String? _optStr(Map<String, dynamic> json, List<String> keys) {
+    for (final k in keys) {
+      final v = json[k]?.toString().trim();
+      if (v != null && v.isNotEmpty && v.toLowerCase() != 'null') return v;
+    }
+    return null;
+  }
+
+  bool get hasAttachment => attachmentUrl != null;
 
   static String? _readSubject(Map<String, dynamic> json) {
     for (final k in const ['subject', 'tenMon', 'ten_mon', 'monHoc', 'mon_hoc', 'tenHocPhan']) {
@@ -94,11 +118,13 @@ class NotificationHistory implements FilterableNotification {
     // Epoch (giây hoặc mili giây)
     final n = raw is num ? raw.toInt() : int.tryParse(s);
     if (n != null && n > 0) {
-      return DateTime.fromMillisecondsSinceEpoch(n > 100000000000 ? n : n * 1000).toLocal();
+      final ms = n > 100000000000 ? n : n * 1000;
+      return _stripUtc(DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true));
     }
 
-    final clean = s.replaceAll(RegExp(r'[Zz]$'), '');
-    final iso = DateTime.tryParse(clean);
+    // Xóa cờ / offset múi giờ ở cuối chuỗi (+07, +07:00, +0700, Z...) để giữ nguyên giờ hiển thị của server
+    final clean = s.replaceAll(RegExp(r'([+-]\d{2}(:?\d{2})?|[Zz])$'), '').trim();
+    final iso = DateTime.tryParse(clean) ?? DateTime.tryParse(s);
     if (iso != null) return _stripUtc(iso);
 
     for (final f in const ['dd/MM/yyyy HH:mm:ss', 'dd/MM/yyyy HH:mm', 'dd/MM/yyyy', 'yyyy/MM/dd HH:mm:ss']) {
@@ -118,13 +144,20 @@ class NotificationHistory implements FilterableNotification {
     timestamp: timestamp,
     is_read: read ?? is_read,
     subject: subject ?? this.subject,
+    attachmentUrl: attachmentUrl,
+    attachmentType: attachmentType,
+    attachmentName: attachmentName,
   );
 
   static const _types = <String, (String, String, Color)>{
-    'CLASS': ('📚', 'Lịch học', Color(0xFF2196F3)),
+    'CLASS': ('📢', 'Thông báo', Color(0xFF2196F3)),
+    'BROADCAST': ('📢', 'Thông báo', Color(0xFF2196F3)),
+    'ANNOUNCEMENT': ('📢', 'Thông báo', Color(0xFF2196F3)),
     'EXAM': ('📝', 'Lịch thi', Color(0xFFFF9800)),
     'REMINDER': ('⏰', 'Nhắc nhở', Color(0xFF4CAF50)),
     'EXAM_ADVANCE': ('📅', 'Nhắc thi', Color(0xFFF44336)),
+    'ATTENDANCE_IN': ('📥', 'Nhắc nhở', Color(0xFF4CAF50)),
+    'ATTENDANCE_OUT': ('📤', 'Nhắc nhở', Color(0xFF4CAF50)),
   };
 
   String get typeEmoji => _types[type]?.$1 ?? '📬';
@@ -189,6 +222,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
 
   /// Tăng mỗi lần reload; dùng để bỏ kết quả "tải thêm" cũ nếu list đã bị làm mới.
   int _gen = 0;
+  StreamSubscription? _foregroundSub;
 
   @override
   void initState() {
@@ -198,24 +232,32 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         if (!_tabController.indexIsChanging) setState(() {});
       });
     _scrollController.addListener(_onScroll);
+
+    // Tự động làm mới danh sách khi nhận thông báo mới khi app đang mở
+    _foregroundSub = SimpleFirebaseService.instance.onMessageReceived.listen((_) {
+      if (mounted) {
+        _loadData(force: true, silent: true);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _foregroundSub?.cancel();
     _scrollController.dispose();
     _tabController.dispose();
     super.dispose();
   }
 
-  /// Được widget cha gọi khi tab này được chọn (tải lười, chỉ tải 1 lần).
-  void loadTab([int? _]) => _loadData();
+  /// Được widget cha gọi khi tab này được chọn (tải lại ngầm để luôn cập nhật mới).
+  void loadTab([int? _]) => _loadData(force: true, silent: _loaded);
 
   // ───────────── Dữ liệu dẫn xuất ─────────────
 
   List<NotificationHistory> get _tabItems => switch (_tabController.index) {
-    1 => _all.where((n) => n.type == 'CLASS').toList(),
+    1 => _all.where((n) => n.type == 'CLASS' || n.type == 'BROADCAST' || n.type == 'ANNOUNCEMENT').toList(),
     2 => _all.where((n) => n.type == 'EXAM' || n.type == 'EXAM_ADVANCE').toList(),
-    3 => _all.where((n) => n.type == 'REMINDER').toList(),
+    3 => _all.where((n) => n.type == 'REMINDER' || n.type == 'ATTENDANCE_IN' || n.type == 'ATTENDANCE_OUT').toList(),
     _ => _all,
   };
 
@@ -318,7 +360,15 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
   static bool _sameList(List<NotificationHistory> a, List<NotificationHistory> b) {
     if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
-      if (a[i].id != b[i].id || a[i].is_read != b[i].is_read || a[i].title != b[i].title) return false;
+      if (a[i].id != b[i].id ||
+          a[i].is_read != b[i].is_read ||
+          a[i].title != b[i].title ||
+          a[i].body != b[i].body ||
+          a[i].attachmentUrl != b[i].attachmentUrl ||
+          a[i].attachmentType != b[i].attachmentType ||
+          a[i].attachmentName != b[i].attachmentName) {
+        return false;
+      }
     }
     return true;
   }
@@ -457,14 +507,15 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     await _waitRouteDismissed(route);
     await WidgetsBinding.instance.endOfFrame;
 
-    if (!mounted || !wasUnread) return;
-    _applyRead(n.copyWith(read: true));
+    if (!mounted) return;
+    if (wasUnread) _applyRead(n.copyWith(read: true));
+    _loadData(force: true, silent: true);
   }
 
   Future<void> _markAllAsRead() async {
-    final ok = await _confirm(
+    final ok = await showAppConfirm(
+      context,
       icon: Icons.done_all_rounded,
-      color: Theme.of(context).primaryColor,
       title: 'Đánh dấu tất cả đã đọc?',
       message: '$_unread thông báo chưa đọc sẽ chuyển sang đã đọc.',
       okLabel: 'Xác nhận',
@@ -473,11 +524,16 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     try {
       await NotificationHistoryService.markAllAsRead(context);
       await _loadData(force: true);
-      _toast('Đã đánh dấu tất cả là đã đọc');
+      if (mounted) showAppToast(context, 'Đã đánh dấu tất cả là đã đọc');
     } catch (e) {
       debugPrint('Error marking all as read: $e');
       if (mounted) {
-        _showError('Lỗi', 'Không thể đánh dấu tất cả đã đọc. Vui lòng thử lại.', onRetry: _markAllAsRead);
+        showAppError(
+          context,
+          title: 'Lỗi',
+          message: 'Không thể đánh dấu tất cả đã đọc. Vui lòng thử lại.',
+          onRetry: _markAllAsRead,
+        );
       }
     }
   }
@@ -638,6 +694,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         centerTitle: false, // tiêu đề nằm bên trái
         titleSpacing: 16,   // khoảng cách từ mép trái (tùy chỉnh
@@ -646,7 +703,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
           textAlign: TextAlign.center,
           style: TextStyle(
             fontWeight: FontWeight.bold,
-            fontSize: 18,
+            fontSize: 22,
             color: isDark ? Colors.white : Colors.black87,
           ),
         ),
@@ -690,7 +747,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
           labelPadding: const EdgeInsets.symmetric(horizontal: 2),
           tabs: const [
             _FitTab('Tất cả'),
-            _FitTab('Lớp học'),
+            _FitTab('Thông báo'),
             _FitTab('Lịch thi'),
             _FitTab('Nhắc nhở'),
           ],
@@ -770,7 +827,7 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
           Icons.notifications_off_rounded,
           'Không có thông báo',
           subtitle: switch (_tabController.index) {
-            1 => 'Chưa có thông báo lịch học',
+            1 => 'Chưa có thông báo',
             2 => 'Chưa có thông báo lịch thi',
             3 => 'Chưa có thông báo nhắc nhở',
             _ => 'Chưa có thông báo nào',

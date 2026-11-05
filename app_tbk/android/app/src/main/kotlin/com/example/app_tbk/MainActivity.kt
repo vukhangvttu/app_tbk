@@ -10,6 +10,10 @@ package com.example.app_tbk
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
@@ -17,6 +21,7 @@ import java.io.File
 
 class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.example.app_tbk/security"
+    private val WIDGET_CHANNEL = "com.example.app_tbk/widget_pin"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -39,6 +44,38 @@ class MainActivity: FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIDGET_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "requestPinWidget" -> {
+                    val success = requestPinWidgetNative()
+                    result.success(success)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun requestPinWidgetNative(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val appWidgetManager = AppWidgetManager.getInstance(applicationContext)
+        if (!appWidgetManager.isRequestPinAppWidgetSupported) return false
+
+        val myProvider = ComponentName(
+            applicationContext,
+            com.example.app_tbk.widget.NextClassWidgetProvider::class.java
+        )
+
+        val successCallback = PendingIntent.getBroadcast(
+            applicationContext,
+            0,
+            Intent(applicationContext, com.example.app_tbk.widget.NextClassWidgetProvider::class.java).apply {
+                action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return appWidgetManager.requestPinAppWidget(myProvider, null, successCallback)
     }
 
     /**

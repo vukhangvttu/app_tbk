@@ -27,8 +27,14 @@ class AbsenceCalculator {
     // Create a Set of "normalized_name_yyyy-MM-dd" for fast lookup
     Set<String> attendedSessions = {};
     for (var record in historyData) {
-      String tenMon = record['tenmon']?.toString() ?? '';
-      String thoigianBdStr = record['THOIGIANBD']?.toString() ?? '';
+      String tenMon = record['tenmon']?.toString() ??
+          record['TENMON']?.toString() ??
+          record['tenMon']?.toString() ??
+          '';
+      String thoigianBdStr = record['THOIGIANBD']?.toString() ??
+          record['thoigianbd']?.toString() ??
+          record['thoigianBd']?.toString() ??
+          '';
       if (tenMon.isEmpty || thoigianBdStr.isEmpty) continue;
 
       try {
@@ -107,7 +113,7 @@ class AbsenceCalculator {
       bool isBanned = absentPeriods > allowedAbsentPeriods;
       
       int avgPeriodsPerSession = totalSessions > 0 ? (totalPeriods / totalSessions).ceil() : 0;
-      bool isWarning = !isBanned && (absentPeriods + avgPeriodsPerSession > allowedAbsentPeriods);
+      bool isWarning = !isBanned && (absentPeriods > 0 || (absentPeriods + avgPeriodsPerSession > allowedAbsentPeriods));
 
       results.add(SubjectAttendance(
         tenMon: originalName,

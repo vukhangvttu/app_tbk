@@ -10,6 +10,11 @@ class AppNotificationSettings {
   final int examReminderDays;
   final String notificationSound; // 'system', 'sound_gentle', 'sound_energetic', 'sound_bell'
   final bool isDefaultSettings; // Thêm flag để đánh dấu là settings mặc định
+  final bool attendanceInEnabled;
+  final int attendanceInMinutes;
+  final bool attendanceOutEnabled;
+  final int attendanceOutMinutes;
+
 
   AppNotificationSettings({
     required this.enabled,
@@ -23,6 +28,10 @@ class AppNotificationSettings {
     required this.examReminderDays,
     this.notificationSound = 'system',
     this.isDefaultSettings = false,
+    required this.attendanceInEnabled,
+    required this.attendanceInMinutes,
+    required this.attendanceOutEnabled,
+    required this.attendanceOutMinutes
   });
 
   String get scheduleTimeString =>
@@ -42,6 +51,10 @@ class AppNotificationSettings {
     int? examReminderDays,
     String? notificationSound,
     bool? isDefaultSettings,
+    bool? attendanceInEnabled,
+    int? attendanceInMinutes,
+    bool? attendanceOutEnabled,
+    int? attendanceOutMinutes
   }) {
     return AppNotificationSettings(
       enabled: enabled ?? this.enabled,
@@ -55,6 +68,11 @@ class AppNotificationSettings {
       examReminderDays: examReminderDays ?? this.examReminderDays,
       notificationSound: notificationSound ?? this.notificationSound,
       isDefaultSettings: isDefaultSettings ?? this.isDefaultSettings,
+        attendanceInEnabled: attendanceInEnabled ?? this.attendanceInEnabled,
+      attendanceInMinutes: attendanceInMinutes ?? this.attendanceInMinutes,
+        attendanceOutEnabled: attendanceOutEnabled ?? this.attendanceOutEnabled,
+        attendanceOutMinutes: attendanceOutMinutes ?? this.attendanceOutMinutes
+
     );
   }
 
@@ -65,12 +83,17 @@ class AppNotificationSettings {
       scheduleHour: json['schedule_hour'] ?? json['scheduleHour'] ?? 8,
       scheduleMinute: json['schedule_minute'] ?? json['scheduleMinute'] ?? 30,
       examEnabled: json['exam_enabled'] ?? json['examEnabled'] ?? true,
-      examHour: json['exam_hour'] ?? json['examHour'] ?? 6,
+      examHour: json['exam_hour'] ?? json['examHour'] ?? 8,
       examMinute: json['exam_minute'] ?? json['examMinute'] ?? 0,
       reminderMinutes: json['reminder_minutes'] ?? json['reminderMinutes'] ?? 30,
       examReminderDays: json['exam_reminder_days'] ?? json['examReminderDays'] ?? 3,
       notificationSound: json['notification_sound'] ?? json['notificationSound'] ?? 'system',
       isDefaultSettings: isDefault,
+      attendanceInEnabled: json['attendance_in_enabled'] ?? true,
+      attendanceInMinutes: json['attendance_in_minutes'] ?? 5,
+      attendanceOutEnabled: json['attendance_out_enabled'] ?? true,
+      attendanceOutMinutes: json['attendance_out_minutes'] ?? 5,
+
     );
   }
 

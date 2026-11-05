@@ -60,10 +60,14 @@ extension NotificationSortX on NotificationSort {
 
 /// Các loại thông báo (khớp NotificationHistory.type).
 const Map<String, String> kNotificationTypes = {
-  'CLASS': 'Lịch học',
+  'CLASS': 'Thông báo',
+  'BROADCAST': 'Thông báo',
+  'ANNOUNCEMENT': 'Thông báo',
   'EXAM': 'Lịch thi',
   'EXAM_ADVANCE': 'Nhắc thi',
   'REMINDER': 'Nhắc nhở',
+  'ATTENDANCE_IN': 'Nhắc nhở',
+  'ATTENDANCE_OUT': 'Nhắc nhở',
 };
 
 const Set<String> _kExamTypes = {'EXAM', 'EXAM_ADVANCE'};

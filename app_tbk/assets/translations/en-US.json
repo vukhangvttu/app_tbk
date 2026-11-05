@@ -113,7 +113,7 @@
     "male": "Male",
     "female": "Female",
     "theme_changed": "Switched to {mode}",
-    "logout_title": "Log out", ,
+    "logout_title": "Log out",
     "load_error_title": "Couldn't load data",
     "load_error_default": "Failed to load your profile",
     "retry": "Retry"

@@ -4,6 +4,7 @@ import 'package:app_tbk/features/notification/utils/notification_filter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/notification_service.dart';
 import 'notification_history_screen.dart'; // NotificationHistory
@@ -91,10 +92,14 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
   Color _typeColor(String type) {
     switch (type) {
       case 'CLASS':
+      case 'BROADCAST':
+      case 'ANNOUNCEMENT':
         return const Color(0xFF2196F3);
       case 'EXAM':
         return const Color(0xFFFF9800);
       case 'REMINDER':
+      case 'ATTENDANCE_IN':
+      case 'ATTENDANCE_OUT':
         return const Color(0xFF4CAF50);
       case 'EXAM_ADVANCE':
         return const Color(0xFFF44336);
@@ -106,11 +111,17 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
   IconData _typeIcon(String type) {
     switch (type) {
       case 'CLASS':
-        return Icons.school_rounded;
+      case 'BROADCAST':
+      case 'ANNOUNCEMENT':
+        return Icons.campaign_rounded;
       case 'EXAM':
         return Icons.assignment_rounded;
       case 'REMINDER':
         return Icons.alarm_rounded;
+      case 'ATTENDANCE_IN':
+        return Icons.login_rounded;
+      case 'ATTENDANCE_OUT':
+        return Icons.logout_rounded;
       case 'EXAM_ADVANCE':
         return Icons.event_rounded;
       default:
@@ -200,6 +211,10 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
                 sliver: SliverList(
                   delegate: SliverChildListDelegate([
                     _Reveal(delayMs: 80, child: _buildBodyCard(n, scheme)),
+                    if (n.hasAttachment) ...[
+                      const SizedBox(height: 14),
+                      _Reveal(delayMs: 120, child: _buildAttachmentCard(n, scheme)),
+                    ],
                     const SizedBox(height: 14),
                     _Reveal(delayMs: 160, child: _buildInfoCard(n, scheme, subject)),
                   ]),
@@ -348,7 +363,7 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
       ),
       _InfoRow(
         icon: Icons.schedule_rounded,
-        label: 'Thời gian',
+        label: 'Thời gian nhận',
         scheme: scheme,
         child: _InfoText(DateFormat('dd/MM/yyyy HH:mm').format(n.timestamp), scheme),
       ),
@@ -366,35 +381,35 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
           scheme: scheme,
           child: _InfoText(n.mssv, scheme),
         ),
-      ValueListenableBuilder<bool>(
-        valueListenable: _isRead,
-        builder: (_, read, __) {
-          final color = read ? const Color(0xFF2E9E5B) : scheme.primary;
-          return _InfoRow(
-            icon: read
-                ? Icons.mark_email_read_rounded
-                : Icons.mark_email_unread_rounded,
-            label: 'Trạng thái',
-            scheme: scheme,
-            tint: color,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              child: Align(
-                key: ValueKey(read),
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  read ? 'Đã đọc' : 'Chưa đọc',
-                  style: TextStyle(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w700,
-                    color: color,
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
+      // ValueListenableBuilder<bool>(
+      //   valueListenable: _isRead,
+      //   builder: (_, read, __) {
+      //     final color = read ? const Color(0xFF2E9E5B) : scheme.primary;
+      //     return _InfoRow(
+      //       icon: read
+      //           ? Icons.mark_email_read_rounded
+      //           : Icons.mark_email_unread_rounded,
+      //       label: 'Trạng thái',
+      //       scheme: scheme,
+      //       tint: color,
+      //       child: AnimatedSwitcher(
+      //         duration: const Duration(milliseconds: 250),
+      //         child: Align(
+      //           key: ValueKey(read),
+      //           alignment: Alignment.centerLeft,
+      //           child: Text(
+      //             read ? 'Đã đọc' : 'Chưa đọc',
+      //             style: TextStyle(
+      //               fontSize: 14.5,
+      //               fontWeight: FontWeight.w700,
+      //               color: color,
+      //             ),
+      //           ),
+      //         ),
+      //       ),
+      //     );
+      //   },
+      // ),
     ];
 
     final divided = <Widget>[];
@@ -413,6 +428,366 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
       scheme: scheme,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Column(children: divided),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // FILE ĐÍNH KÈM
+  // ---------------------------------------------------------------------
+  static final _imgExt = RegExp(r'\.(png|jpe?g|gif|webp|bmp|heic)(\?.*)?$', caseSensitive: false);
+  static final _docExt = RegExp(r'\.(pdf|docx?|xlsx?|csv)(\?.*)?$', caseSensitive: false);
+
+  bool _isDrive(String url) => url.contains('drive.google.com') || url.contains('docs.google.com');
+
+  /// Trả về 'word' | 'pdf' | 'excel' hoặc null nếu không phải tài liệu.
+  /// Chỉ xét type + tên + đuôi file / đường dẫn Google Docs (KHÔNG tìm chuỗi trong id Drive,
+  /// vì id ngẫu nhiên có thể tình cờ chứa "doc", "pdf"...).
+  String? _docKind(NotificationHistory n) {
+    final meta = '${n.attachmentType ?? ''} ${n.attachmentName ?? ''}'.toLowerCase();
+    final url = (n.attachmentUrl ?? '').toLowerCase();
+
+    if (meta.contains('pdf') || RegExp(r'\.pdf(\?.*)?$').hasMatch(url)) return 'pdf';
+    if (RegExp(r'xls|excel|sheet|csv').hasMatch(meta) ||
+        RegExp(r'\.(xlsx?|csv)(\?.*)?$').hasMatch(url) ||
+        url.contains('/spreadsheets/')) {
+      return 'excel';
+    }
+    if (RegExp(r'doc|word').hasMatch(meta) ||
+        RegExp(r'\.docx?(\?.*)?$').hasMatch(url) ||
+        url.contains('/document/')) {
+      return 'word';
+    }
+    return null;
+  }
+
+  String _kindLabel(String? kind) => switch (kind) {
+        'pdf' => 'PDF',
+        'excel' => 'Excel',
+        'word' => 'Word',
+        _ => 'Tệp',
+      };
+
+  Color _kindColor(String? kind, ColorScheme scheme) => switch (kind) {
+        'pdf' => const Color(0xFFE53935),
+        'excel' => const Color(0xFF2E7D32),
+        'word' => const Color(0xFF1565C0),
+        _ => scheme.primary,
+      };
+
+  bool _isImage(NotificationHistory n) {
+    if (_docKind(n) != null) return false; // MỚI: docx/pdf/excel luôn hiển thị dạng link
+    final t = (n.attachmentType ?? '').toLowerCase();
+    if (t.contains('image') || const ['png', 'jpg', 'jpeg', 'gif', 'webp', 'img', 'hinh', 'photo'].contains(t)) {
+      return true;
+    }
+    if (t.isNotEmpty && !t.contains('drive') && !t.contains('link')) return false; // type đã nói rõ là docx/pdf...
+    return _imgExt.hasMatch(n.attachmentUrl!);
+  }
+
+  String? _driveId(String url) =>
+      (RegExp(r'/d/([a-zA-Z0-9_-]+)').firstMatch(url) ?? RegExp(r'[?&]id=([a-zA-Z0-9_-]+)').firstMatch(url))
+          ?.group(1);
+
+  /// Link Drive dạng /view không hiển thị được bằng Image.network → đổi sang link thumbnail.
+  String _imageSrc(String url) {
+    if (!_isDrive(url)) return url;
+    final id = _driveId(url);
+    return id == null ? url : 'https://drive.google.com/thumbnail?id=$id&sz=w1600';
+  }
+
+  String _attachmentTitle(NotificationHistory n) {
+    if (n.attachmentName != null) return n.attachmentName!;
+    final seg = Uri.tryParse(n.attachmentUrl!)?.pathSegments.where((s) => s.isNotEmpty).lastOrNull;
+    return seg ?? 'Tệp đính kèm';
+  }
+
+  IconData _fileIcon(NotificationHistory n) {
+    switch (_docKind(n)) {
+      case 'pdf':
+        return Icons.picture_as_pdf_rounded;
+      case 'excel':
+        return Icons.table_chart_rounded;
+      case 'word':
+        return Icons.description_rounded;
+    }
+    if (_isDrive(n.attachmentUrl!)) return Icons.add_to_drive_rounded;
+    return Icons.attach_file_rounded;
+  }
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    var ok = false;
+    if (uri != null) {
+      try {
+        ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('Không thể mở liên kết'),
+          behavior: SnackBarBehavior.floating,
+        ));
+    }
+  }
+
+  void _openImageViewer(String src, String url) {
+    Navigator.of(context).push(MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+              tooltip: 'Mở bằng trình duyệt',
+              icon: const Icon(Icons.open_in_new_rounded),
+              onPressed: () => _openUrl(url),
+            ),
+          ],
+        ),
+        body: Center(
+          child: InteractiveViewer(
+            maxScale: 5,
+            child: Image.network(
+              src,
+              loadingBuilder: (_, child, p) => p == null
+                  ? child
+                  : const Center(child: CircularProgressIndicator()),
+              errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_rounded, color: Colors.white54, size: 64),
+            ),
+          ),
+        ),
+      ),
+    ));
+  }
+
+  Widget _buildAttachmentCard(NotificationHistory n, ColorScheme scheme) {
+    final url = n.attachmentUrl!;
+    final isImage = _isImage(n);
+    final title = _attachmentTitle(n);
+
+    return _SurfaceCard(
+      scheme: scheme,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.attach_file_rounded, size: 18, color: scheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Tệp đính kèm',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (isImage) ...[
+            _buildImagePreview(url, scheme),
+            const SizedBox(height: 10),
+            Text(title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: scheme.onSurface)),
+          ] else
+            _buildFileTile(n, title, scheme),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImagePreview(String url, ColorScheme scheme) {
+    final src = _imageSrc(url);
+    return GestureDetector(
+      onTap: () => _openImageViewer(src, url),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 320, minHeight: 120),
+          child: SizedBox(
+            width: double.infinity,
+            child: Image.network(
+              src,
+              fit: BoxFit.cover,
+              loadingBuilder: (_, child, p) => p == null
+                  ? child
+                  : Container(
+                      height: 160,
+                      color: scheme.surfaceContainerHighest,
+                      alignment: Alignment.center,
+                      child: const CircularProgressIndicator(strokeWidth: 2),
+                    ),
+              errorBuilder: (_, __, ___) => Container(
+                height: 120,
+                color: scheme.surfaceContainerHighest,
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.broken_image_rounded, color: scheme.onSurfaceVariant, size: 32),
+                    const SizedBox(height: 6),
+                    TextButton(onPressed: () => _openUrl(url), child: const Text('Mở liên kết')),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileTile(NotificationHistory n, String title, ColorScheme scheme) {
+    final url = n.attachmentUrl!;
+    final kind = _docKind(n);
+    final isDoc = kind != null;
+    final color = _kindColor(kind, scheme);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Thẻ tên file
+        Material(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => _openUrl(url),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(_fileIcon(n), color: color),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 14.5, fontWeight: FontWeight.w600, color: scheme.onSurface)),
+                        const SizedBox(height: 2),
+                        Text(
+                          isDoc
+                              ? 'Tệp ${_kindLabel(kind)}${_isDrive(url) ? ' · Google Drive' : ''}'
+                              : (_isDrive(url) ? 'Google Drive' : 'Liên kết'),
+                          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+
+        // Thông báo + đường link đầy đủ
+        const SizedBox(height: 12),
+        if (isDoc)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            margin: const EdgeInsets.only(bottom: 10),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline_rounded, size: 16, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Đây là tệp ${_kindLabel(kind)}. Hãy nhấn "Mở tệp đầy đủ" hoặc mở link bên dưới '
+                    'để xem toàn bộ nội dung (tất cả các trang).',
+                    style: TextStyle(fontSize: 12.5, height: 1.4, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Text('Đường dẫn',
+            style: TextStyle(
+                fontSize: 11.5, fontWeight: FontWeight.w500, color: scheme.onSurfaceVariant)),
+        const SizedBox(height: 4),
+        InkWell(
+          onTap: () => _openUrl(url),
+          child: Text(
+            url,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.4,
+              color: scheme.primary,
+              decoration: TextDecoration.underline,
+              decorationColor: scheme.primary,
+            ),
+          ),
+        ),
+
+        // Nút hành động
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                ),
+                onPressed: () => _openUrl(url),
+                icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                label: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    isDoc ? 'Mở tệp đầy đủ' : 'Mở liên kết',
+                    maxLines: 1,
+                    softWrap: false,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                ),
+                onPressed: () => _copy(url, 'Đã sao chép liên kết'),
+                icon: const Icon(Icons.link_rounded, size: 17),
+                label: const FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    'Sao chép link',
+                    maxLines: 1,
+                    softWrap: false,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
