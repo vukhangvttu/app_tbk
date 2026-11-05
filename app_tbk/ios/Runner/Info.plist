@@ -82,6 +82,18 @@
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>Ứng dụng cần quyền truy cập vị trí để xác nhận bạn đang ở đúng địa điểm check-in</string>
 
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.73761905325-g3jhur76dkiok5qkigkbfjvgbh9i06ho</string>
+			</array>
+		</dict>
+	</array>
+
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
