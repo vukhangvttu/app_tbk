@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:app_tbk/core/errors/exceptions.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -46,25 +45,29 @@ class NotificationServices {
       // ✅ Request permission
       await _requestPermission();
 
-      // ✅ On iOS, wait for APNs token first before getting FCM token
-      if (Platform.isIOS) {
-        print('🍎 Waiting for APNs token on iOS...');
-        String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-        int retryCount = 0;
-        while (apnsToken == null && retryCount < 10) {
-          await Future.delayed(const Duration(seconds: 1));
-          apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-          retryCount++;
-          print('  ⏳ Retrying APNs token ($retryCount/10)...');
-        }
-        if (apnsToken == null) {
-          print('⚠️ APNs token is null on iOS. FCM token fetch might fail.');
-        } else {
-          print('✅ APNs Token received: $apnsToken');
-        }
+      // ✅ Get FCM token
+      final fcmToken = await FirebaseMessaging.instance.getToken()
+          .timeout(const Duration(seconds: 10), onTimeout: () {
+        print('⏱️ FCM token timeout');
+        return null;
+      });
+
+      if (fcmToken == null || fcmToken.isEmpty) {
+        throw Exception('FCM token is empty or null');
       }
 
-      // ✅ Listen for token refresh FIRST so even if initial getToken fails/delays, we capture it
+      print('📱 Current FCM Token: $fcmToken');
+
+      // ✅ Get real device info from AuthService
+      final deviceInfo = await DeviceHelper.getDeviceInfo();
+      String deviceId = deviceInfo['device_id'] ?? 'unknown_device';
+
+      // ✅ Luôn cập nhật Token lên Go Server khi init để đảm bảo DB luôn có Token mới nhất
+      print('🔄 Updating FCM Token to server for MSSV $mssv...');
+      await saveFcmTokenToServer(mssv, fcmToken, deviceId);
+      await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
+
+      // ✅ Listen for token refresh
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
         print('🔄 FCM Token refreshed: $newToken');
 
@@ -81,28 +84,6 @@ class NotificationServices {
       }).onError((err) {
         print('❌ Error on token refresh: $err');
       });
-
-      // ✅ Get FCM token
-      String? fcmToken = await FirebaseMessaging.instance.getToken()
-          .timeout(const Duration(seconds: 15), onTimeout: () {
-        print('⏱️ FCM token timeout');
-        return null;
-      });
-
-      if (fcmToken != null && fcmToken.isNotEmpty) {
-        print('📱 Current FCM Token: $fcmToken');
-
-        // ✅ Get real device info from AuthService
-        final deviceInfo = await DeviceHelper.getDeviceInfo();
-        String deviceId = deviceInfo['device_id'] ?? 'unknown_device';
-
-        // ✅ Luôn cập nhật Token lên Go Server khi init để đảm bảo DB luôn có Token mới nhất
-        print('🔄 Updating FCM Token to server for MSSV $mssv...');
-        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
-        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
-      } else {
-        print('⚠️ FCM Token is null or empty on initial fetch.');
-      }
 
       // ✅ Listen for foreground messages
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
