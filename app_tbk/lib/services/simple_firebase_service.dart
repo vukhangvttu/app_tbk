@@ -210,13 +210,6 @@ class SimpleFirebaseService {
       print('❌ Lỗi lấy FCM token: $e');
     }
   }
-        print('🔄 Token mới: $newToken');
-        _fcmToken = newToken;
-      });
-    } catch (e) {
-      print('❌ Lỗi lấy FCM token: $e');
-    }
-  }
 
   // ========== SETUP LOCAL NOTIFICATIONS ==========
   Future<void> _setupLocalNotifications() async {
