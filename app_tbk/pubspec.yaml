@@ -106,11 +106,19 @@ dependencies:
   shimmer: ^3.0.0
 
 flutter:
+  config:
+    enable-swift-package-manager: false
   assets:
     - assets/translations/
     - assets/images/
     - assets/sounds/
   uses-material-design: true
+
+dependency_overrides:
+  # iOS: google_sign_in_ios 5.9.0 keo GoogleSignIn 8 (doi GoogleUtilities 8.x),
+  # xung dot voi ML Kit + Firebase (GoogleUtilities 7.x) lam pod install that bai.
+  # Giu o 5.8.1 (GoogleSignIn 7.1) de dung chung GoogleUtilities 7.x.
+  google_sign_in_ios: '>=5.7.0 <5.9.0'
 
 dev_dependencies:
   flutter_test:
