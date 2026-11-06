@@ -17,6 +17,11 @@ class NotificationServices {
   bool _isInitialized = false;
   BuildContext? _context;
 
+  // ✅ Trạng thái đăng ký token (phục vụ retry khi APNs/FCM chưa sẵn sàng)
+  bool _listenersRegistered = false;
+  bool _tokenSaved = false;
+  bool _tokenRetryScheduled = false;
+
   // ✅ Shared Preferences keys
   static const String _keyLastFcmToken = 'last_fcm_token';
   static const String _keyLastDeviceId = 'last_device_id';
@@ -24,102 +29,184 @@ class NotificationServices {
 
   /// ✅ Init notification service (CHỈ GỌI SAU KHI FIREBASE READY)
   Future<void> init(BuildContext context) async {
+    _context = context;
+
+    final prefs = await SharedPreferences.getInstance();
+    final String? mssv = prefs.getString('mssv');
+
     if (_isInitialized) {
       print('⏭️ NotificationServices already initialized');
+      // Đã init nhưng lần trước chưa lưu được token (APNs/FCM chưa sẵn sàng)
+      // → thử đăng ký lại thay vì bỏ qua hẳn
+      if (!_tokenSaved && mssv != null && mssv.isNotEmpty) {
+        print('🔁 Retrying FCM token registration...');
+        final ok = await _fetchAndSaveToken(mssv);
+        if (!ok) _scheduleTokenRetry(mssv);
+      }
       return;
     }
-
-    _context = context;
 
     try {
       print('🔔 Initializing NotificationServices...');
 
-      final prefs = await SharedPreferences.getInstance();
-      final String? mssv = prefs.getString('mssv');
-
       if (mssv == null || mssv.isEmpty) {
         print('⚠️ MSSV not found, skipping FCM token registration');
-        _isInitialized = true;
+        // KHÔNG đánh dấu _isInitialized: để lần init sau (khi đã có MSSV) chạy tiếp được
         return;
       }
 
       // ✅ Request permission
       await _requestPermission();
 
-      // ✅ On iOS, wait for APNs token first before getting FCM token
-      if (Platform.isIOS) {
-        print('🍎 Waiting for APNs token on iOS...');
-        String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-        int retryCount = 0;
-        while (apnsToken == null && retryCount < 10) {
-          await Future.delayed(const Duration(seconds: 1));
-          apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-          retryCount++;
-          print('  ⏳ Retrying APNs token ($retryCount/10)...');
-        }
-        if (apnsToken == null) {
-          print('⚠️ APNs token is null on iOS. FCM token fetch might fail.');
-        } else {
-          print('✅ APNs Token received: $apnsToken');
-        }
+      // ✅ Đăng ký listeners đúng 1 lần — TRƯỚC khi lấy token,
+      // để token về muộn (onTokenRefresh) vẫn được lưu lên server
+      if (!_listenersRegistered) {
+        _listenersRegistered = true;
+
+        FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+          print('🔄 FCM Token refreshed: $newToken');
+
+          final prefs = await SharedPreferences.getInstance();
+          final currentMssv = await AuthService.getSavedMssv() ?? prefs.getString('mssv') ?? '';
+
+          final currentDeviceInfo = await DeviceHelper.getDeviceInfo();
+          final currentDeviceId = currentDeviceInfo['device_id'] ?? 'unknown_device';
+
+          if (currentMssv.isNotEmpty) {
+            final ok = await saveFcmTokenToServer(currentMssv, newToken, currentDeviceId);
+            if (ok) _tokenSaved = true;
+            await _cacheTokenInfo(prefs, currentMssv, newToken, currentDeviceId);
+          }
+        }).onError((err) {
+          print('❌ Error on token refresh: $err');
+        });
+
+        // ✅ Listen for foreground messages
+        FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+          print('📬 Received foreground message in NotificationServices: ${message.notification?.title}');
+          final notificationId = NotificationTrackingService.extractNotificationId(message.data);
+          if (notificationId != null) {
+            NotificationTrackingService.reportDelivered(notificationId);
+          }
+        });
       }
 
-      // ✅ Listen for token refresh FIRST so even if initial getToken fails/delays, we capture it
-      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-        print('🔄 FCM Token refreshed: $newToken');
-
-        final prefs = await SharedPreferences.getInstance();
-        final currentMssv = await AuthService.getSavedMssv() ?? prefs.getString('mssv') ?? '';
-
-        final currentDeviceInfo = await DeviceHelper.getDeviceInfo();
-        final currentDeviceId = currentDeviceInfo['device_id'] ?? 'unknown_device';
-
-        if (currentMssv.isNotEmpty) {
-          await saveFcmTokenToServer(currentMssv, newToken, currentDeviceId);
-          await _cacheTokenInfo(prefs, currentMssv, newToken, currentDeviceId);
-        }
-      }).onError((err) {
-        print('❌ Error on token refresh: $err');
-      });
-
-      // ✅ Get FCM token
-      String? fcmToken = await FirebaseMessaging.instance.getToken()
-          .timeout(const Duration(seconds: 15), onTimeout: () {
-        print('⏱️ FCM token timeout');
-        return null;
-      });
-
-      if (fcmToken != null && fcmToken.isNotEmpty) {
-        print('📱 Current FCM Token: $fcmToken');
-
-        // ✅ Get real device info from AuthService
-        final deviceInfo = await DeviceHelper.getDeviceInfo();
-        String deviceId = deviceInfo['device_id'] ?? 'unknown_device';
-
-        // ✅ Luôn cập nhật Token lên Go Server khi init để đảm bảo DB luôn có Token mới nhất
-        print('🔄 Updating FCM Token to server for MSSV $mssv...');
-        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
-        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
-      } else {
-        print('⚠️ FCM Token is null or empty on initial fetch.');
+      // ✅ Lấy FCM token + gửi lên server (có chờ APNs và retry bên trong)
+      final saved = await _fetchAndSaveToken(mssv);
+      if (!saved) {
+        // Chưa lưu được (thường do APNs token chưa về kịp trên iOS)
+        // → hẹn thử lại ở nền, đừng để cả phiên mất đăng ký token
+        _scheduleTokenRetry(mssv);
       }
-
-      // ✅ Listen for foreground messages
-      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-        print('📬 Received foreground message in NotificationServices: ${message.notification?.title}');
-        final notificationId = NotificationTrackingService.extractNotificationId(message.data);
-        if (notificationId != null) {
-          NotificationTrackingService.reportDelivered(notificationId);
-        }
-      });
 
       _isInitialized = true;
       print('✅ NotificationServices initialized');
     } catch (e, stackTrace) {
       print('❌ Error initializing NotificationServices: $e');
       print('Stack trace: $stackTrace');
-      _isInitialized = true;
+      // KHÔNG đánh dấu _isInitialized khi lỗi: lần init kế tiếp phải chạy lại được
     }
+  }
+
+  /// ⏳ Chờ APNs token trên iOS (tối đa ~30s). Android bỏ qua, trả về true ngay.
+  Future<bool> _waitForApnsToken() async {
+    if (!Platform.isIOS) return true;
+
+    print('🍎 Waiting for APNs token on iOS...');
+    String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
+    int retryCount = 0;
+    while (apnsToken == null && retryCount < 30) {
+      await Future.delayed(const Duration(seconds: 1));
+      apnsToken = await FirebaseMessaging.instance.getAPNSToken();
+      retryCount++;
+      print('  ⏳ Retrying APNs token ($retryCount/30)...');
+    }
+
+    if (apnsToken == null) {
+      print('⚠️ APNs token is null on iOS. FCM token fetch might fail.');
+      return false;
+    }
+
+    print('✅ APNs Token received: $apnsToken');
+    return true;
+  }
+
+  /// 📱 Lấy FCM token có retry.
+  /// Trên iOS, getToken() gọi quá sớm sẽ VĂNG lỗi apns-token-not-set (không phải timeout)
+  /// nên phải bắt lỗi và thử lại, không chỉ bọc .timeout().
+  Future<String?> _getTokenWithRetry() async {
+    for (int attempt = 1; attempt <= 5; attempt++) {
+      try {
+        final token = await FirebaseMessaging.instance.getToken()
+            .timeout(const Duration(seconds: 15), onTimeout: () {
+          print('⏱️ FCM token timeout (attempt $attempt)');
+          return null;
+        });
+        if (token != null && token.isNotEmpty) {
+          return token;
+        }
+        print('⚠️ FCM token null/empty (attempt $attempt)');
+      } catch (e) {
+        print('⚠️ getToken attempt $attempt failed: $e');
+      }
+
+      if (attempt < 5) {
+        await Future.delayed(Duration(seconds: attempt * 3));
+      }
+    }
+    return null;
+  }
+
+  /// 🚀 Lấy FCM token rồi gửi lên server. Trả về true nếu server đã lưu (HTTP 200).
+  Future<bool> _fetchAndSaveToken(String mssv) async {
+    // Chờ APNs trước (iOS). Nếu APNs chưa về vẫn thử getToken (đã có retry),
+    // nhưng KHÔNG coi là xong — nơi gọi sẽ hẹn retry tiếp khi hàm này trả false.
+    await _waitForApnsToken();
+
+    final fcmToken = await _getTokenWithRetry();
+    if (fcmToken == null || fcmToken.isEmpty) {
+      print('⚠️ FCM Token is null after retries.');
+      return false;
+    }
+
+    print('📱 Current FCM Token: $fcmToken');
+
+    // ✅ Get real device info from AuthService
+    final deviceInfo = await DeviceHelper.getDeviceInfo();
+    String deviceId = deviceInfo['device_id'] ?? 'unknown_device';
+
+    // ✅ Luôn cập nhật Token lên Go Server khi init để đảm bảo DB luôn có Token mới nhất
+    print('🔄 Updating FCM Token to server for MSSV $mssv...');
+    final ok = await saveFcmTokenToServer(mssv, fcmToken, deviceId);
+
+    final prefs = await SharedPreferences.getInstance();
+    await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
+
+    if (ok) {
+      _tokenSaved = true;
+    }
+    return ok;
+  }
+
+  /// 🔁 Hẹn thử lại đăng ký token ở nền (mỗi 20s, tối đa 5 lần)
+  /// khi lần đầu thất bại — cứu trường hợp APNs/FCM sẵn sàng muộn trên iOS.
+  void _scheduleTokenRetry(String mssv) {
+    if (_tokenRetryScheduled || _tokenSaved) return;
+    _tokenRetryScheduled = true;
+
+    () async {
+      for (int i = 1; i <= 5 && !_tokenSaved; i++) {
+        await Future.delayed(const Duration(seconds: 20));
+        if (_tokenSaved) break;
+        print('🔁 Token registration retry $i/5...');
+        try {
+          await _fetchAndSaveToken(mssv);
+        } catch (e) {
+          print('⚠️ Token registration retry $i error: $e');
+        }
+      }
+      _tokenRetryScheduled = false;
+    }();
   }
 
   /// ✅ Kiểm tra xem có cần update token không
@@ -194,7 +281,8 @@ class NotificationServices {
     }
   }
 
-  Future<void> saveFcmTokenToServer(String mssv, String fcmToken, String deviceId) async {
+  /// Trả về true CHỈ khi server trả HTTP 200 (đã lưu token thật).
+  Future<bool> saveFcmTokenToServer(String mssv, String fcmToken, String deviceId) async {
     final url = '/users/$mssv/token';
 
     try {
@@ -215,14 +303,18 @@ class NotificationServices {
 
       if (response?.statusCode == 200) {
         print('✅ FCM token saved successfully');
+        return true;
       } else {
         print('❌ Failed to save FCM token: ${response?.statusCode}');
         print('   Response: ${response?.body}');
+        return false;
       }
     } on NoInternetException {
       print('🌐 Offline mode: Không thể gửi FCM token lên server do mất mạng - sẽ thử lại khi có mạng.');
+      return false;
     } catch (e) {
       print('❌ Error saving FCM token: $e');
+      return false;
     }
   }
 
@@ -232,16 +324,12 @@ class NotificationServices {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('mssv', mssv);
 
-      final deviceInfo = await DeviceHelper.getDeviceInfo();
-      String deviceId = deviceInfo['device_id'];
-
-      // ✅ Force update vì MSSV thay đổi
-      final fcmToken = await FirebaseMessaging.instance.getToken();
-      if (fcmToken != null) {
-        print('🔄 MSSV updated - forcing token refresh');
-        await saveFcmTokenToServer(mssv, fcmToken, deviceId);
-        await _cacheTokenInfo(prefs, mssv, fcmToken, deviceId);
-      }
+      // ✅ Force update vì MSSV thay đổi — dùng chung luồng chờ APNs + retry
+      // (bản cũ gọi thẳng getToken(): trên iOS lúc vừa login APNs chưa sẵn sàng
+      // nên văng lỗi apns-token-not-set và mất luôn lần lưu này)
+      print('🔄 MSSV updated - forcing token refresh');
+      final ok = await _fetchAndSaveToken(mssv);
+      if (!ok) _scheduleTokenRetry(mssv);
     } catch (e) {
       print('❌ Error updating MSSV: $e');
     }
@@ -250,6 +338,7 @@ class NotificationServices {
   /// ✅ Clear token khi logout
   Future<void> clearToken() async {
     try {
+      _tokenSaved = false;
       await FirebaseMessaging.instance.deleteToken();
 
       final prefs = await SharedPreferences.getInstance();
