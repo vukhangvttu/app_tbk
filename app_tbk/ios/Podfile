@@ -45,6 +45,9 @@ post_install do |installer|
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
       config.build_settings['ENABLE_BITCODE'] = 'NO'
+      # Xcode 16 (macos-15 runner) bien loi "non-modular header inside framework
+      # module" cua Firebase thanh loi cung — cho phep lai nhu Xcode 15
+      config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
     end
   end
 end
