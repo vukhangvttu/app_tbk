@@ -333,8 +333,10 @@ struct KeyframeRecord {
         return result
     }
 
-    private func extractVertices(from verticesBuffer: UnsafeBufferPointer<SIMD3<Float>>) -> [[Float]] {
-        return verticesBuffer.map { [$0.x, $0.y, $0.z] }
+    // SDK moi (Xcode 16) tra geometry.vertices dang [SIMD3<Float>], SDK cu dang
+    // UnsafeBufferPointer — viet generic theo Sequence de compile ca hai.
+    private func extractVertices<S: Sequence>(from vertices: S) -> [[Float]] where S.Element == SIMD3<Float> {
+        return vertices.map { [$0.x, $0.y, $0.z] }
     }
 
     private func processKeyframes(
