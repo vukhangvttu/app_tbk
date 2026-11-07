@@ -520,18 +520,16 @@ class AuthService {
           print('⚠️ Không thể đọc device_id khi logout: $e');
         }
         
-        if (deviceId != null) {
-          try {
-            await authenticatedRequestLichSinhVien(
-              method: 'POST',
-              endpoint: '/auth/logout',
-              body: {'device_id': deviceId},
-              retry: false,
-            );
-            print('✅ Đã gọi API logout thành công');
-          } catch (e) {
-            print('⚠️ Không thể gọi API logout: $e');
-          }
+        try {
+          await authenticatedRequestLichSinhVien(
+            method: 'POST',
+            endpoint: '/auth/logout',
+            body: deviceId != null ? {'device_id': deviceId} : {},
+            retry: false,
+          );
+          print('✅ Đã gọi API logout thành công');
+        } catch (e) {
+          print('⚠️ Không thể gọi API logout: $e');
         }
       }
 

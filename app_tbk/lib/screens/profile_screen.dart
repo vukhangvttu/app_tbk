@@ -1,4 +1,5 @@
 import 'package:app_tbk/features/auth/screens/login_screen.dart';
+import 'package:app_tbk/features/auth/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
@@ -922,22 +923,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              // Xóa thông tin đăng nhập
-              await _storage.delete(key: 'saved_mssv');
-              await _storage.delete(key: 'auth_token');
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('biometric_enabled');
-              await prefs.remove('login_timestamp');
+              // Xóa thông tin đăng nhập và gọi API logout
+              await AuthService.logout();
 
               // Cập nhật state
-              setState(() {
-                _biometricEnabled = false;
-              });
+              if (mounted) {
+                setState(() {
+                  _biometricEnabled = false;
+                });
+              }
 
+              if (!mounted) return;
               Navigator.pop(context);
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(builder: (context) =>  LoginScreen()),
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
               );
 
               ScaffoldMessenger.of(context).showSnackBar(

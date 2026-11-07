@@ -749,6 +749,32 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
     }
 
     try {
+      if (Platform.isIOS) {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            icon: const Icon(Icons.info_outline, color: Colors.blue, size: 40),
+            title: const Text('Hướng dẫn thêm Widget trên iOS'),
+            content: const Text(
+              'Hệ điều hành iOS không hỗ trợ ứng dụng tự ghim Widget trực tiếp ra màn hình chính.\n\n'
+              'Để thêm Widget trên iOS, bạn vui lòng làm theo hướng dẫn:\n'
+              '1. Ra màn hình chính (Home Screen).\n'
+              '2. Nhấn giữ vào khoảng trống bất kỳ cho đến khi các ứng dụng rung rinh.\n'
+              '3. Nhấn vào nút dấu (+) ở góc trên màn hình.\n'
+              '4. Tìm tên ứng dụng và chọn "Thêm tiện ích" (Add Widget).',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Đã hiểu'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
       final supported = await HomeWidget.isRequestPinWidgetSupported();
       if (supported != true) {
         bao('Thiết bị không hỗ trợ ghim widget');
@@ -821,7 +847,17 @@ class _ScheduleScreenState extends State<ScheduleScreen> with SingleTickerProvid
         scrolledUnderElevation: 0,
         backgroundColor: _mauThe(theme),
         surfaceTintColor: Colors.transparent,
-        title: Text('home.title_1'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+        elevation: 0,
+        centerTitle: false,
+        titleSpacing: 16,
+        title: Text(
+          'home.title_1'.tr(),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 22,
+            color: _laToi(theme) ? Colors.white : Colors.black87,
+          ),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.widgets_outlined),

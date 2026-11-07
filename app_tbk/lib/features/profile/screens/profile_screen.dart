@@ -16,6 +16,7 @@ import 'package:app_tbk/screens/notifications_settings_screen.dart';
 import '../../../config/api_constants.dart';
 import '../../auth/services/auth_service.dart';
 import 'about_screen.dart';
+import 'app_permissions_screen.dart';
 import 'change_password_screen.dart';
 import 'edit_profile_screen.dart';
 import 'face_id_setup_screen.dart';
@@ -363,11 +364,15 @@ class ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildAppBar(ThemeData theme, bool isDark) {
     return SliverAppBar(
-      expandedHeight: 50,
+      automaticallyImplyLeading: false,
+      scrolledUnderElevation: 0,
+      surfaceTintColor: Colors.transparent,
       floating: false,
       pinned: true,
       backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
       elevation: 0,
+      centerTitle: false,
+      titleSpacing: 16,
       title: Text(
         'profile.title_1'.tr(),
         style: TextStyle(
@@ -626,6 +631,25 @@ class ProfileScreenState extends State<ProfileScreen> {
               context,
               MaterialPageRoute(
                   builder: (context) => const NotificationSettingsScreen()),
+            );
+          },
+          isDark: isDark,
+          trailing: Icon(
+            Icons.arrow_forward_ios,
+            size: 16,
+            color: isDark ? Colors.grey[600] : Colors.grey[400],
+          ),
+        ),
+        _buildActionTile(
+          icon: Icons.security_rounded,
+          title: 'Quyền ứng dụng',
+          subtitle: 'Quản lý quyền Vị trí, Máy ảnh & Thông báo',
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const AppPermissionsScreen(),
+              ),
             );
           },
           isDark: isDark,
@@ -938,12 +962,7 @@ class ProfileScreenState extends State<ProfileScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              await _storage.delete(key: 'saved_mssv');
-              await _storage.delete(key: 'auth_token');
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('biometric_enabled');
-              await prefs.remove('biometric_authenticated');
-              await prefs.remove('login_timestamp');
+              await AuthService.logout();
 
               if (!mounted) return;
               Navigator.pop(dialogContext);

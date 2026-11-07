@@ -32,7 +32,7 @@ class NotificationServices {
     _context = context;
 
     final prefs = await SharedPreferences.getInstance();
-    final String? mssv = prefs.getString('mssv');
+    final String? mssv = await AuthService.getSavedMssv() ?? prefs.getString('mssv');
 
     if (_isInitialized) {
       print('⏭️ NotificationServices already initialized');
@@ -48,7 +48,6 @@ class NotificationServices {
 
     try {
       print('🔔 Initializing NotificationServices...');
-
       if (mssv == null || mssv.isEmpty) {
         print('⚠️ MSSV not found, skipping FCM token registration');
         // KHÔNG đánh dấu _isInitialized: để lần init sau (khi đã có MSSV) chạy tiếp được

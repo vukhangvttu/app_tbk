@@ -63,7 +63,13 @@ class _AttendanceManagementScreenState extends State<AttendanceManagementScreen>
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
+        automaticallyImplyLeading: false,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        elevation: 0,
+        centerTitle: false,
+        titleSpacing: 16,
         title: Text(
           'Danh sách chức năng',
           style: TextStyle(
@@ -72,7 +78,6 @@ class _AttendanceManagementScreenState extends State<AttendanceManagementScreen>
             color: isDark ? Colors.white : Colors.black87,
           ),
         ),
-        elevation: 0,
         iconTheme: IconThemeData(
           color: isDark ? Colors.white : Colors.black87,
         ),

@@ -156,8 +156,8 @@ class NotificationHistory implements FilterableNotification {
     'EXAM': ('📝', 'Lịch thi', Color(0xFFFF9800)),
     'REMINDER': ('⏰', 'Nhắc nhở', Color(0xFF4CAF50)),
     'EXAM_ADVANCE': ('📅', 'Nhắc thi', Color(0xFFF44336)),
-    'ATTENDANCE_IN': ('📥', 'Nhắc nhở', Color(0xFF4CAF50)),
-    'ATTENDANCE_OUT': ('📤', 'Nhắc nhở', Color(0xFF4CAF50)),
+    'ATTENDANCE_IN': ('🫪', 'Nhắc nhở', Color(0xFF4CAF50)),
+    'ATTENDANCE_OUT': ('😨', 'Nhắc nhở', Color(0xFF4CAF50)),
   };
 
   String get typeEmoji => _types[type]?.$1 ?? '📬';
@@ -695,12 +695,14 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
       backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
         backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
         centerTitle: false, // tiêu đề nằm bên trái
-        titleSpacing: 16,   // khoảng cách từ mép trái (tùy chỉnh
+        titleSpacing: 16,   // khoảng cách từ mép trái
         title: Text(
           'Lịch sử thông báo',
-          textAlign: TextAlign.center,
+          textAlign: TextAlign.left,
           style: TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 22,
@@ -947,6 +949,18 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         ? (isDark ? theme.primaryColor.withValues(alpha: 0.6) : theme.primaryColor.withValues(alpha: 0.4))
         : (isDark ? Colors.grey.shade800.withValues(alpha: 0.5) : Colors.grey.shade300.withValues(alpha: 0.5));
 
+    final titleColor = unread
+        ? (isDark ? Colors.white : const Color(0xFF0F172A))
+        : (isDark ? Colors.grey.shade500 : Colors.grey.shade600);
+
+    final bodyColor = unread
+        ? (isDark ? Colors.grey.shade300 : Colors.grey.shade800)
+        : (isDark ? Colors.grey.shade600 : Colors.grey.shade500);
+
+    final metaColor = unread
+        ? n.color
+        : (isDark ? Colors.grey.shade600 : Colors.grey.shade500);
+
     return Dismissible(
       key: ValueKey(n.id),
       direction: DismissDirection.endToStart,
@@ -959,96 +973,96 @@ class NotificationHistoryScreenState extends State<NotificationHistoryScreen>
         decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)),
         child: const Icon(Icons.delete_rounded, color: Colors.white),
       ),
-      child: Card(
+      child: Container(
         margin: const EdgeInsets.only(bottom: 6),
-        elevation: unread ? (isDark ? 0 : 1) : 0,
-        clipBehavior: Clip.hardEdge, // antiAlias tốn hơn trên mỗi item khi cuộn/overscroll
-        shape: RoundedRectangleBorder(
+        decoration: BoxDecoration(
+          color: cardBg,
           borderRadius: BorderRadius.circular(12),
-          side: BorderSide(
+          border: Border.all(
             color: borderColor,
-            width: unread ? 1.5 : 1.0,
+            width: 1.0,
           ),
-        ),
-        color: cardBg,
-        child: ListTile(
-          onTap: () => _open(n), // xem toàn bộ nội dung ở màn hình chi tiết
-          dense: true,
-          minLeadingWidth: 0,
-          horizontalTitleGap: 10,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          leading: CircleAvatar(
-            radius: 15,
-            backgroundColor: unread
-                ? n.color.withValues(alpha: isDark ? 0.25 : 0.15)
-                : (isDark ? Colors.grey.shade800.withValues(alpha: 0.5) : Colors.grey.shade200),
-            child: Text(
-              n.typeEmoji,
-              style: TextStyle(
-                fontSize: 14,
-                color: unread ? null : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
-              ),
-            ),
-          ),
-          title: Text(
-            n.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontWeight: unread ? FontWeight.bold : FontWeight.normal,
-              fontSize: unread ? 14.5 : 13.5,
-              color: unread
-                  ? (isDark ? Colors.white : const Color(0xFF0F172A))
-                  : (isDark ? Colors.grey.shade500 : Colors.grey.shade600),
-            ),
-          ),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 2),
-              Text(
-                n.body,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: unread ? 12.5 : 12.0,
-                  color: unread
-                      ? (isDark ? Colors.grey.shade300 : Colors.grey.shade800)
-                      : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '${n.typeLabel} · ${n.formattedTime}',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  color: unread
-                      ? n.color
-                      : (isDark ? Colors.grey.shade600 : Colors.grey.shade500),
-                  fontWeight: unread ? FontWeight.w600 : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-          trailing: unread
-              ? Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: theme.primaryColor,
-                    shape: BoxShape.circle,
-                    boxShadow: isDark
-                        ? [
-                            BoxShadow(
-                              color: theme.primaryColor.withValues(alpha: 0.6),
-                              blurRadius: 4,
-                              spreadRadius: 1,
-                            ),
-                          ]
-                        : null,
+          boxShadow: unread && !isDark
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
                   ),
-                )
+                ]
               : null,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: ListTile(
+            onTap: () => _open(n), // xem toàn bộ nội dung ở màn hình chi tiết
+            dense: true,
+            minLeadingWidth: 0,
+            horizontalTitleGap: 10,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+            leading: _TypeAvatar(
+              emoji: n.typeEmoji,
+              dimmed: !unread,
+              background: unread
+                  ? n.color.withValues(alpha: isDark ? 0.25 : 0.15)
+                  : (isDark ? Colors.grey.shade800.withValues(alpha: 0.5) : Colors.grey.shade200),
+            ),
+            title: Text(
+              n.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: unread ? FontWeight.bold : FontWeight.w500,
+                fontSize: 14.0,
+                color: titleColor,
+              ),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 2),
+                Text(
+                  n.body,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.0,
+                    color: bodyColor,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${n.typeLabel} · ${n.formattedTime}',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: metaColor,
+                    fontWeight: unread ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+              ],
+            ),
+            trailing: SizedBox(
+              width: 8,
+              height: 8,
+              child: unread
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color: theme.primaryColor,
+                        shape: BoxShape.circle,
+                        boxShadow: isDark
+                            ? [
+                                BoxShadow(
+                                  color: theme.primaryColor.withValues(alpha: 0.6),
+                                  blurRadius: 4,
+                                  spreadRadius: 1,
+                                ),
+                              ]
+                            : null,
+                      ),
+                    )
+                  : null,
+            ),
+          ),
         ),
       ),
     );
@@ -1101,4 +1115,43 @@ class _FitTab extends StatelessWidget {
       child: Text(label, maxLines: 1, softWrap: false),
     ),
   );
+}
+
+class _TypeAvatar extends StatelessWidget {
+  final String emoji;
+  final Color background;
+  final bool dimmed;
+
+  const _TypeAvatar({
+    required this.emoji,
+    required this.background,
+    this.dimmed = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 34,
+      height: 34,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: background, shape: BoxShape.circle),
+      child: Opacity(
+        opacity: dimmed ? 0.5 : 1,
+        child: Text(
+          emoji,
+          textAlign: TextAlign.center,
+          textHeightBehavior: const TextHeightBehavior(
+            applyHeightToFirstAscent: false,
+            applyHeightToLastDescent: false,
+          ),
+          strutStyle: const StrutStyle(
+            fontSize: 16,
+            height: 1.0,
+            forceStrutHeight: true,
+          ),
+          style: const TextStyle(fontSize: 16, height: 1.0),
+        ),
+      ),
+    );
+  }
 }
