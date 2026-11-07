@@ -1,11 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import '../services/face_detection_service.dart';
+import '../services/face_3d_service.dart';
 
 class FaceCameraWidget extends StatefulWidget {
   final Function(String base64Image, Uint8List imageBytes) onCapture;
@@ -34,6 +35,14 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
   double _livenessScore = 0;
   bool _requiresBlink = false;
 
+  // 3D Face Verification state
+  bool _use3DFace = false;
+  Face3DChallenge? _challenge3D;
+  StreamSubscription<Face3DFrameEvent>? _face3dSub;
+  bool _isVerifying3D = false;
+  double _verifyProgress = 0.0;
+  Timer? _verifyTimer;
+
   // Beauty filter settings
   double _beautyLevel = 0.3; // 0.0 - 1.0
 
@@ -43,19 +52,191 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // _faceDetectionService.resetHistory();
-    _initializeCamera();
+    _check3DSupportAndInit();
   }
 
+  Future<void> _check3DSupportAndInit() async {
+    final bool is3dSupported = await Face3DService.isSupported();
+    if (is3dSupported) {
+      setState(() {
+        _use3DFace = true;
+      });
+      await _start3DFaceVerifyFlow();
+    } else {
+      await _initializeCamera();
+    }
+  }
+
+  // =========================================================================
+  // 3D NATIVE FACE VERIFY FLOW (iOS ARKit v1.2 ~2 giây với Challenge)
+  // =========================================================================
+  Future<void> _start3DFaceVerifyFlow() async {
+    try {
+      setState(() {
+        _isInitialized = true;
+        _statusMessage = 'Đang lấy thử thách xác thực 3D...';
+        _verifyProgress = 0.0;
+      });
+
+      // 1. Fetch challenge before starting
+      _challenge3D = await Face3DService.getChallenge();
+
+      final String actionText = _getActionInstruction(_challenge3D!.action);
+
+      // 2. Start native tracking session
+      final bool started = await Face3DService.startSession(
+        mode: 'verify',
+        challengeId: _challenge3D!.challengeId,
+      );
+
+      if (!started) {
+        throw Exception('Không thể khởi tạo ARSession 3D');
+      }
+
+      setState(() {
+        _statusMessage = actionText;
+        _faceDetected = true;
+      });
+
+      // 3. Listen to stream and auto-submit after ~2 seconds session
+      _face3dSub?.cancel();
+      _face3dSub = Face3DService.trackingStream.listen(_handle3DVerifyFrame);
+
+      _verifyTimer?.cancel();
+      int elapsedMs = 0;
+      _verifyTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        elapsedMs += 100;
+        if (mounted) {
+          setState(() {
+            _verifyProgress = (elapsedMs / 2000.0).clamp(0.0, 1.0);
+          });
+        }
+
+        if (elapsedMs >= 2200) {
+          timer.cancel();
+          _submit3DVerification();
+        }
+      });
+    } catch (e) {
+      debugPrint('Lỗi 3D Verify Init: $e');
+      if (mounted) {
+        setState(() {
+          _use3DFace = false;
+        });
+        _initializeCamera();
+      }
+    }
+  }
+
+  String _getActionInstruction(String action) {
+    switch (action) {
+      case 'blink':
+        return 'Vui lòng CHỚP MẮT để xác nhận';
+      case 'turn_left':
+        return 'Vui lòng XOAY MẶT SANG TRÁI';
+      case 'turn_right':
+        return 'Vui lòng XOAY MẶT SANG PHẢI';
+      case 'smile':
+        return 'Vui lòng MỈM CƯỜI';
+      default:
+        return 'Nhìn thẳng vào camera';
+    }
+  }
+
+  void _handle3DVerifyFrame(Face3DFrameEvent event) {
+    if (!mounted || _isVerifying3D) return;
+
+    if (!event.isTracked) {
+      setState(() {
+        _statusMessage = 'Không tìm thấy khuôn mặt';
+        _faceDetected = false;
+      });
+    } else {
+      final String actionText = _challenge3D != null
+          ? _getActionInstruction(_challenge3D!.action)
+          : 'Đang xác thực 3D...';
+      setState(() {
+        _statusMessage = actionText;
+        _faceDetected = true;
+      });
+    }
+  }
+
+  Future<void> _submit3DVerification() async {
+    if (_isVerifying3D) return;
+    _isVerifying3D = true;
+
+    try {
+      setState(() {
+        _statusMessage = 'Đang kiểm tra chống giả lập 3D...';
+      });
+
+      await Face3DService.stopSession();
+      final payload = await Face3DService.getCollectedPayload();
+
+      if (payload == null) {
+        throw Exception('Không lấy được dữ liệu 3D từ thiết bị');
+      }
+
+      final result = await Face3DService.submitPayload(
+        mode: 'verify',
+        nativePayload: payload,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        final rgbImages = payload['rgb_images'] as Map<dynamic, dynamic>?;
+        final Uint8List primaryBytes = rgbImages != null && rgbImages.containsKey('rgb_0')
+            ? Uint8List.fromList((rgbImages['rgb_0'] as List).cast<int>())
+            : Uint8List(0);
+
+        final base64Image = base64Encode(primaryBytes);
+        widget.onCapture(base64Image, primaryBytes);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message ?? 'Xác thực 3D rớt. Thử lại...'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        _isVerifying3D = false;
+        _start3DFaceVerifyFlow(); // Retry with fresh challenge
+      }
+    } catch (e) {
+      debugPrint('Lỗi submit 3D verify: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lỗi: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        _isVerifying3D = false;
+        _start3DFaceVerifyFlow();
+      }
+    }
+  }
+
+  // =========================================================================
+  // 2D FALLBACK FLOW
+  // =========================================================================
   @override
   void dispose() {
+    _face3dSub?.cancel();
+    _verifyTimer?.cancel();
+    if (_use3DFace) {
+      Face3DService.stopSession();
+    }
     WidgetsBinding.instance.removeObserver(this);
     _stopCamera();
     _faceDetectionService.dispose();
     super.dispose();
   }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_use3DFace) return;
     final CameraController? cameraController = _cameraController;
 
     if (cameraController == null || !cameraController.value.isInitialized) {
@@ -104,14 +285,14 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
     }
   }
 
-  bool _isDisposing = false; // THÊM BIẾN NÀY
+  bool _isDisposing = false;
   Future<void> _stopCamera() async {
     if (_isDisposing || _cameraController == null) return;
     _isDisposing = true;
 
     try {
       final controller = _cameraController!;
-      _cameraController = null; // NULL NGAY LẬP TỨC
+      _cameraController = null;
 
       if (controller.value.isInitialized) {
         if (controller.value.isStreamingImages) {
@@ -122,9 +303,10 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
     } catch (e) {
       debugPrint('Stop camera error: $e');
     }
-    }
+  }
 
   Future<void> _processCameraImage(CameraImage image) async {
+    if (_use3DFace) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastDetectionTime < 500) return;
     _lastDetectionTime = now;
@@ -173,6 +355,11 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
   }
 
   Future<void> _captureImage() async {
+    if (_use3DFace) {
+      _submit3DVerification();
+      return;
+    }
+
     if (_cameraController == null ||
         !_cameraController!.value.isInitialized ||
         !_faceDetected) {
@@ -182,13 +369,10 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
 
     try {
       await _cameraController!.stopImageStream();
-
       final XFile imageFile = await _cameraController!.takePicture();
       final Uint8List imageBytes = await imageFile.readAsBytes();
 
-      // Xử lý ảnh với beauty filter
       final processedBytes = await _processImage(imageBytes);
-
       final base64Image = base64Encode(processedBytes);
 
       widget.onCapture(base64Image, processedBytes);
@@ -202,29 +386,13 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
     img.Image? image = img.decodeImage(bytes);
     if (image == null) return bytes;
 
-    // === BEAUTY FILTER CHUYÊN NGHIỆP ===
-
-    // 1. Làm mịn da (Bilateral filter)
     for (int i = 0; i < 2; i++) {
       image = img.gaussianBlur(image!, radius: 2);
     }
-
-    // 2. Sharpen nhẹ để giữ chi tiết
     final sharpened = _applySharpen(image!, amount: 0.3);
-
-    // 3. Tăng độ sáng và saturation
-    image = img.adjustColor(sharpened,
-      brightness: 1.08,
-      saturation: 1.05,
-    );
-
-    // 4. Tăng độ tương phản
+    image = img.adjustColor(sharpened, brightness: 1.08, saturation: 1.05);
     image = img.adjustColor(image, contrast: 1.12);
-
-    // 5. Giảm độ đỏ
     image = _reduceRedness(image);
-
-    // 6. Soft glow effect
     image = _applySoftGlow(image, intensity: 0.15);
 
     return Uint8List.fromList(img.encodeJpg(image, quality: 95));
@@ -236,20 +404,14 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
       -amount, 1.0 + 4 * amount, -amount,
       0.0, -amount, 0.0,
     ];
-
-    return img.convolution(src,
-      filter: kernel,
-      div: 1.0,
-    );
+    return img.convolution(src, filter: kernel, div: 1.0);
   }
 
   img.Image _reduceRedness(img.Image src) {
     final result = img.Image.from(src);
-
     for (int y = 0; y < result.height; y++) {
       for (int x = 0; x < result.width; x++) {
         final pixel = result.getPixel(x, y);
-
         int r = pixel.r.toInt();
         int g = pixel.g.toInt();
         int b = pixel.b.toInt();
@@ -258,11 +420,9 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
           r = (r * 0.92).toInt();
           g = (g * 1.05).toInt();
         }
-
         result.setPixelRgba(x, y, r, g, b, pixel.a.toInt());
       }
     }
-
     return result;
   }
 
@@ -282,20 +442,16 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
         result.setPixelRgba(x, y, r, g, b, original.a.toInt());
       }
     }
-
     return result;
   }
 
   int _screenBlend(int base, int blend, double intensity) {
     final result = 255 - ((255 - base) * (255 - blend)) ~/ 255;
-    return ((base * (1 - intensity)) + (result * intensity))
-        .toInt()
-        .clamp(0, 255);
+    return ((base * (1 - intensity)) + (result * intensity)).toInt().clamp(0, 255);
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _handleBackPressed() async {
@@ -305,6 +461,42 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
   }
 
   Widget _buildCameraPreview() {
+    if (_use3DFace) {
+      return Container(
+        color: const Color(0xFF18181B),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 140,
+                height: 140,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF007AFF), width: 3),
+                  color: const Color(0xFF1C1C1E),
+                ),
+                child: const Icon(
+                  Icons.face_retouching_natural,
+                  size: 72,
+                  color: Color(0xFF007AFF),
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: 220,
+                child: LinearProgressIndicator(
+                  value: _verifyProgress,
+                  backgroundColor: Colors.white12,
+                  color: const Color(0xFF007AFF),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       return Container(color: Colors.black);
     }
@@ -322,12 +514,8 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Camera preview gốc
               CameraPreview(_cameraController!),
-
-              // === BEAUTY FILTER REAL-TIME ===
               if (_beautyLevel > 0) ...[
-                // Layer 1: Skin Smoothing (Blur nhẹ)
                 BackdropFilter(
                   filter: ui.ImageFilter.blur(
                     sigmaX: _beautyLevel * 1.8,
@@ -335,8 +523,6 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
                   ),
                   child: Container(color: Colors.transparent),
                 ),
-
-                // Layer 2: Soft Light Center Glow
                 Container(
                   decoration: BoxDecoration(
                     gradient: RadialGradient(
@@ -351,8 +537,6 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
                     ),
                   ),
                 ),
-
-                // Layer 3: Warm Tone Overlay (Giảm xanh lạnh)
                 Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
@@ -366,8 +550,6 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
                     ),
                   ),
                 ),
-
-                // Layer 4: Brightness Boost (Làm sáng da)
                 Container(
                   decoration: BoxDecoration(
                     gradient: RadialGradient(
@@ -380,8 +562,6 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
                     ),
                   ),
                 ),
-
-                // Layer 5: Subtle Pink Tone (Má hồng)
                 Positioned.fill(
                   child: CustomPaint(
                     painter: BeautyGlowPainter(
@@ -391,8 +571,6 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
                   ),
                 ),
               ],
-              if (_cameraController == null || !_cameraController!.value.isInitialized)
-                Container(color: Colors.black),
             ],
           ),
         ),
@@ -402,7 +580,7 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
 
   @override
   Widget build(BuildContext context) {
-    if (!_isInitialized || _cameraController == null) {
+    if (!_isInitialized) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -419,28 +597,24 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop || !mounted) return;
-
-        widget.onCancel?.call();
-        await _stopCamera();
+        await _handleBackPressed();
       },
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Camera preview với beauty filter
           _buildCameraPreview(),
 
-          // Face overlay với beauty enhancement
-          CustomPaint(
-            size: MediaQuery.of(context).size,
-            painter: FaceOverlayPainter(
-              faceBoxes: _faceBoxes,
-              imageSize: MediaQuery.of(context).size,
-              faceDetected: _faceDetected,
-              beautyLevel: _beautyLevel,
+          if (!_use3DFace)
+            CustomPaint(
+              size: MediaQuery.of(context).size,
+              painter: FaceOverlayPainter(
+                faceBoxes: _faceBoxes,
+                imageSize: MediaQuery.of(context).size,
+                faceDetected: _faceDetected,
+                beautyLevel: _beautyLevel,
+              ),
             ),
-          ),
 
-          // Status message với liveness score
           Positioned(
             top: 50,
             left: 0,
@@ -448,178 +622,84 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
             child: Column(
               children: [
                 Container(
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  margin: const EdgeInsets.symmetric(horizontal: 32),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
-                    color: _faceDetected
-                        ? Colors.green.withOpacity(0.9)
-                        : (_requiresBlink
-                        ? Colors.orange.withOpacity(0.9)
-                        : Colors.red.withOpacity(0.9)),
-                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Column(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
+                      Icon(
+                        _faceDetected ? Icons.check_circle : Icons.warning,
+                        color: _faceDetected ? Colors.green : Colors.amber,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
                       Text(
                         _statusMessage,
-                        textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                      if (_livenessScore > 0) ...[
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text(
-                              'Độ tin cậy: ',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
-                              ),
-                            ),
-                            Text(
-                              '${(_livenessScore * 100).toStringAsFixed(0)}%',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        LinearProgressIndicator(
-                          value: _livenessScore,
-                          backgroundColor: Colors.white24,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            _livenessScore > 0.7
-                                ? Colors.greenAccent
-                                : (_livenessScore > 0.4
-                                ? Colors.orangeAccent
-                                : Colors.redAccent),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
-                if (_requiresBlink) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    margin: const EdgeInsets.symmetric(horizontal: 32),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.visibility, color: Colors.white),
-                        SizedBox(width: 8),
-                        Text(
-                          '👁️ Hãy nhấp nháy mắt',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
+                if (_use3DFace)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF007AFF).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        'Xác thực 3D TrueDepth (Active Challenge)',
+                        style: TextStyle(color: Color(0xFF007AFF), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
-                ],
               ],
             ),
           ),
 
-          // Beauty level slider và buttons
           Positioned(
             bottom: 40,
             left: 0,
             right: 0,
-            child: Column(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                // Beauty slider
-                Container(
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(25),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.face_retouching_natural,
-                          color: Colors.white, size: 20),
-                      const SizedBox(width: 12),
-                      SizedBox(
-                        width: 140,
-                        child: SliderTheme(
-                          data: SliderThemeData(
-                            activeTrackColor: Colors.pinkAccent,
-                            inactiveTrackColor: Colors.white30,
-                            thumbColor: Colors.white,
-                            overlayColor: Colors.pinkAccent.withOpacity(0.3),
-                            trackHeight: 3,
-                            thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 8),
-                          ),
-                          child: Slider(
-                            value: _beautyLevel,
-                            min: 0,
-                            max: 1,
-                            divisions: 10,
-                            onChanged: (value) {
-                              setState(() {
-                                _beautyLevel = value;
-                              });
-                            },
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        width: 45,
-                        alignment: Alignment.centerRight,
-                        child: Text(
-                          '${(_beautyLevel * 100).toInt()}%',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                FloatingActionButton(
+                  heroTag: 'cancel_btn',
+                  backgroundColor: Colors.white24,
+                  onPressed: () => _handleBackPressed(),
+                  child: const Icon(Icons.close, color: Colors.white),
                 ),
-
-                // Action buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    if (widget.onCancel != null)
-                      FloatingActionButton(
-                        onPressed: widget.onCancel,
-                        backgroundColor: Colors.grey.shade800,
-                        child: const Icon(Icons.close),
-                      ),
-                    FloatingActionButton.extended(
-                      onPressed: _faceDetected ? _captureImage : null,
-                      backgroundColor:
-                      _faceDetected ? Colors.green : Colors.grey.shade700,
-                      icon: const Icon(Icons.camera_alt),
-                      label: const Text('Check-in'),
+                GestureDetector(
+                  onTap: _captureImage,
+                  child: Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 4),
+                      color: _faceDetected ? const Color(0xFF007AFF) : Colors.grey,
                     ),
-                  ],
+                    child: Center(
+                      child: Container(
+                        width: 60,
+                        height: 60,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -630,44 +710,36 @@ class _FaceCameraWidgetState extends State<FaceCameraWidget>
   }
 }
 
-// ===== BEAUTY GLOW PAINTER =====
 class BeautyGlowPainter extends CustomPainter {
   final double intensity;
   final List<Rect> faceBoxes;
 
-  BeautyGlowPainter({
-    required this.intensity,
-    required this.faceBoxes,
-  });
+  BeautyGlowPainter({required this.intensity, required this.faceBoxes});
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (intensity <= 0 || faceBoxes.isEmpty) return;
+    if (faceBoxes.isEmpty) return;
 
-    // Vẽ soft glow xung quanh khuôn mặt
-    for (final faceBox in faceBoxes) {
-      final paint = Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.pink.withOpacity(intensity * 0.08),
-            Colors.white.withOpacity(intensity * 0.05),
-            Colors.transparent,
-          ],
-          stops: const [0.0, 0.4, 1.0],
-        ).createShader(faceBox);
+    final paint = Paint()
+      ..color = Colors.pinkAccent.withOpacity(intensity * 0.15)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20);
 
-      canvas.drawRect(faceBox, paint);
+    for (final box in faceBoxes) {
+      final cheekLeft = Offset(box.left + box.width * 0.25, box.top + box.height * 0.6);
+      final cheekRight = Offset(box.right - box.width * 0.25, box.top + box.height * 0.6);
+      final radius = box.width * 0.15;
+
+      canvas.drawCircle(cheekLeft, radius, paint);
+      canvas.drawCircle(cheekRight, radius, paint);
     }
   }
 
   @override
-  bool shouldRepaint(BeautyGlowPainter oldDelegate) {
-    return oldDelegate.intensity != intensity ||
-        oldDelegate.faceBoxes != faceBoxes;
+  bool shouldRepaint(covariant BeautyGlowPainter oldDelegate) {
+    return oldDelegate.intensity != intensity || oldDelegate.faceBoxes != faceBoxes;
   }
 }
 
-// ===== FACE OVERLAY PAINTER VỚI BEAUTY ENHANCEMENT =====
 class FaceOverlayPainter extends CustomPainter {
   final List<Rect> faceBoxes;
   final Size imageSize;
@@ -678,161 +750,32 @@ class FaceOverlayPainter extends CustomPainter {
     required this.faceBoxes,
     required this.imageSize,
     required this.faceDetected,
-    this.beautyLevel = 0.6,
+    required this.beautyLevel,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background overlay với soft vignette
-    final overlayPaint = Paint()
-      ..shader = RadialGradient(
-        center: Alignment.center,
-        radius: 1.2,
-        colors: [
-          Colors.black.withOpacity(0.4),
-          Colors.black.withOpacity(0.7),
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+    final double scaleX = size.width / imageSize.width;
+    final double scaleY = size.height / imageSize.height;
 
-    final path = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
-
-    final ovalRect = Rect.fromCenter(
-      center: Offset(size.width / 2, size.height / 2),
-      width: size.width * 0.7,
-      height: size.height * 0.5,
-    );
-
-    path.addOval(ovalRect);
-    path.fillType = PathFillType.evenOdd;
-
-    canvas.drawPath(path, overlayPaint);
-
-    // Vẽ soft glow bên trong oval (beauty enhancement)
-    if (beautyLevel > 0.3) {
-      final glowPaint = Paint()
-        ..shader = RadialGradient(
-          center: Alignment.center,
-          radius: 0.4,
-          colors: [
-            Colors.white.withOpacity(beautyLevel * 0.15),
-            Colors.amber.withOpacity(beautyLevel * 0.08),
-            Colors.transparent,
-          ],
-        ).createShader(ovalRect);
-
-      canvas.drawOval(ovalRect, glowPaint);
-    }
-
-    // Vẽ viền oval với gradient
-    final borderPaint = Paint()
-      ..shader = LinearGradient(
-        colors: faceDetected
-            ? [
-          Colors.greenAccent.shade400,
-          Colors.green,
-          Colors.greenAccent.shade700,
-        ]
-            : [
-          Colors.white,
-          Colors.white70,
-          Colors.white,
-        ],
-      ).createShader(ovalRect)
+    final paint = Paint()
+      ..color = faceDetected ? Colors.green : Colors.red
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.5
-      ..strokeCap = StrokeCap.round;
+      ..strokeWidth = 3.0;
 
-    canvas.drawOval(ovalRect, borderPaint);
-
-    // Vẽ corners với glow effect
-    _drawEnhancedCorners(canvas, ovalRect, borderPaint);
-
-    // Vẽ decorative particles (nếu face detected)
-    if (faceDetected && beautyLevel > 0.5) {
-      _drawBeautyParticles(canvas, ovalRect);
-    }
-  }
-
-  void _drawEnhancedCorners(Canvas canvas, Rect rect, Paint paint) {
-    const cornerLength = 35.0;
-    const glowSpread = 8.0;
-
-    // Glow effect cho corners
-    final glowPaint = Paint()
-      ..color = (paint.shader != null ? Colors.white : Colors.white)
-          .withOpacity(0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 8
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, glowSpread);
-
-    // Top left
-    canvas.drawLine(
-        rect.topLeft, rect.topLeft + const Offset(cornerLength, 0), glowPaint);
-    canvas.drawLine(
-        rect.topLeft, rect.topLeft + const Offset(0, cornerLength), glowPaint);
-    canvas.drawLine(
-        rect.topLeft, rect.topLeft + const Offset(cornerLength, 0), paint);
-    canvas.drawLine(
-        rect.topLeft, rect.topLeft + const Offset(0, cornerLength), paint);
-
-    // Top right
-    canvas.drawLine(rect.topRight,
-        rect.topRight + const Offset(-cornerLength, 0), glowPaint);
-    canvas.drawLine(
-        rect.topRight, rect.topRight + const Offset(0, cornerLength), glowPaint);
-    canvas.drawLine(
-        rect.topRight, rect.topRight + const Offset(-cornerLength, 0), paint);
-    canvas.drawLine(
-        rect.topRight, rect.topRight + const Offset(0, cornerLength), paint);
-
-    // Bottom left
-    canvas.drawLine(rect.bottomLeft,
-        rect.bottomLeft + const Offset(cornerLength, 0), glowPaint);
-    canvas.drawLine(rect.bottomLeft,
-        rect.bottomLeft + const Offset(0, -cornerLength), glowPaint);
-    canvas.drawLine(
-        rect.bottomLeft, rect.bottomLeft + const Offset(cornerLength, 0), paint);
-    canvas.drawLine(rect.bottomLeft,
-        rect.bottomLeft + const Offset(0, -cornerLength), paint);
-
-    // Bottom right
-    canvas.drawLine(rect.bottomRight,
-        rect.bottomRight + const Offset(-cornerLength, 0), glowPaint);
-    canvas.drawLine(rect.bottomRight,
-        rect.bottomRight + const Offset(0, -cornerLength), glowPaint);
-    canvas.drawLine(rect.bottomRight,
-        rect.bottomRight + const Offset(-cornerLength, 0), paint);
-    canvas.drawLine(rect.bottomRight,
-        rect.bottomRight + const Offset(0, -cornerLength), paint);
-  }
-
-  void _drawBeautyParticles(Canvas canvas, Rect rect) {
-    final particlePaint = Paint()
-      ..color = Colors.white.withOpacity(0.6)
-      ..style = PaintingStyle.fill
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-
-    // Vẽ 8 particles xung quanh oval
-    final particles = [
-      Offset(rect.center.dx, rect.top - 15),
-      Offset(rect.center.dx, rect.bottom + 15),
-      Offset(rect.left - 15, rect.center.dy),
-      Offset(rect.right + 15, rect.center.dy),
-      Offset(rect.left + 30, rect.top + 20),
-      Offset(rect.right - 30, rect.top + 20),
-      Offset(rect.left + 30, rect.bottom - 20),
-      Offset(rect.right - 30, rect.bottom - 20),
-    ];
-
-    for (final particle in particles) {
-      canvas.drawCircle(particle, 3, particlePaint);
+    for (final box in faceBoxes) {
+      final rect = Rect.fromLTRB(
+        box.left * scaleX,
+        box.top * scaleY,
+        box.right * scaleX,
+        box.bottom * scaleY,
+      );
+      canvas.drawRRect(RRect.fromRectAndRadius(rect, const Radius.circular(16)), paint);
     }
   }
 
   @override
-  bool shouldRepaint(FaceOverlayPainter oldDelegate) {
-    return oldDelegate.faceBoxes != faceBoxes ||
-        oldDelegate.faceDetected != faceDetected ||
-        oldDelegate.beautyLevel != beautyLevel;
+  bool shouldRepaint(covariant FaceOverlayPainter oldDelegate) {
+    return oldDelegate.faceDetected != faceDetected || oldDelegate.faceBoxes != faceBoxes;
   }
 }

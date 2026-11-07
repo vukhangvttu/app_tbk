@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:app_tbk/features/check-in/services/face_3d_service.dart';
 
 class FaceIdScanningScreen extends StatefulWidget {
   const FaceIdScanningScreen({super.key});
@@ -19,7 +20,13 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
   bool _hasError = false;
   String _errorMessage = '';
 
-  // Detector phát hiện khuôn mặt ML Kit
+  // 3D Face Tracking state
+  bool _use3DFace = false;
+  Face3DChallenge? _challenge;
+  StreamSubscription<Face3DFrameEvent>? _face3dSub;
+  bool _isSubmitting3D = false;
+
+  // Detector phát hiện khuôn mặt ML Kit (Fallback cho Android / iOS cũ)
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableLandmarks: true,
@@ -47,9 +54,151 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
   @override
   void initState() {
     super.initState();
-    _initCamera();
+    _check3DSupportAndInit();
   }
 
+  Future<void> _check3DSupportAndInit() async {
+    final bool is3dSupported = await Face3DService.isSupported();
+    if (is3dSupported) {
+      setState(() {
+        _use3DFace = true;
+      });
+      await _start3DFaceEnrollFlow();
+    } else {
+      await _initCamera();
+    }
+  }
+
+  // =========================================================================
+  // 3D NATIVE FACE ENROLLMENT FLOW (iOS ARKit v1.2)
+  // =========================================================================
+  Future<void> _start3DFaceEnrollFlow() async {
+    try {
+      setState(() {
+        _statusMessage = 'Đang khởi tạo thử thách quét 3D...';
+      });
+
+      // 1. Fetch challenge before starting
+      _challenge = await Face3DService.getChallenge();
+
+      // 2. Start native ARSession
+      final bool started = await Face3DService.startSession(
+        mode: 'enroll',
+        challengeId: _challenge!.challengeId,
+      );
+
+      if (!started) {
+        throw Exception('Không thể khởi tạo ARSession 3D');
+      }
+
+      setState(() {
+        _scanStep = 1;
+        _statusMessage = 'Nghiêng đầu vẽ 1 hình tròn (10–12 giây)';
+      });
+
+      // 3. Listen to native tracking stream
+      _face3dSub?.cancel();
+      _face3dSub = Face3DService.trackingStream.listen(_handle3DFrameEvent);
+    } catch (e) {
+      debugPrint('Lỗi 3D Face Enroll Init: $e');
+      if (mounted) {
+        setState(() {
+          _use3DFace = false;
+          _statusMessage = 'Chuyển sang luồng nhận diện 2D...';
+        });
+        _initCamera();
+      }
+    }
+  }
+
+  void _handle3DFrameEvent(Face3DFrameEvent event) {
+    if (!mounted || _isSubmitting3D || _scanStep != 1) return;
+
+    if (!event.isTracked) {
+      setState(() {
+        _statusMessage = 'Không tìm thấy khuôn mặt.\nVui lòng nhìn vào camera.';
+      });
+      return;
+    }
+
+    // Map Completed sectors (0..8) to 64 UI ticks
+    for (int sector in event.completedSectors) {
+      int centerTick = ((sector / 9.0) * 64).round() % 64;
+      for (int offset = -3; offset <= 3; offset++) {
+        int idx = (centerTick + offset + 64) % 64;
+        _completedTicks[idx] = true;
+      }
+    }
+
+    double progress = event.progress;
+    int percentage = (progress * 100).round();
+
+    setState(() {
+      _scanProgress = progress;
+      if (event.completedSectors.length >= 8 || progress >= 0.95) {
+        _scanProgress = 1.0;
+        _statusMessage = 'Đang tải dữ liệu đăng ký 3D...';
+        _on3DScanComplete();
+      } else {
+        _statusMessage = 'Nghiêng đầu xoay hình tròn ($percentage%)';
+      }
+    });
+  }
+
+  Future<void> _on3DScanComplete() async {
+    if (_isSubmitting3D) return;
+    _isSubmitting3D = true;
+
+    try {
+      await Face3DService.stopSession();
+      final payload = await Face3DService.getCollectedPayload();
+
+      if (payload == null) {
+        throw Exception('Không thu thập được dữ liệu 3D từ thiết bị');
+      }
+
+      final result = await Face3DService.submitPayload(
+        mode: 'enroll',
+        nativePayload: payload,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('biometric_enabled', true);
+        setState(() {
+          _scanStep = 2;
+          _statusMessage = 'Hoàn tất đăng ký Face ID 3D!';
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message ?? 'Đăng ký 3D thất bại. Vui lòng quét lại.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        _isSubmitting3D = false;
+        _start3DFaceEnrollFlow(); // Retry with new challenge
+      }
+    } catch (e) {
+      debugPrint('Lỗi gửi payload 3D enroll: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lỗi: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        _isSubmitting3D = false;
+        _start3DFaceEnrollFlow();
+      }
+    }
+  }
+
+  // =========================================================================
+  // 2D FALLBACK FLOW (Camera + ML Kit)
+  // =========================================================================
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
@@ -62,7 +211,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
         return;
       }
 
-      // Chọn camera trước (Front Camera)
       final CameraDescription selectedCamera = cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
@@ -90,7 +238,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
         _statusMessage = 'Định vị khuôn mặt của bạn trong khung.';
       });
 
-      // Bắt đầu luồng xử lý ảnh camera để nhận diện khuôn mặt
       await controller.startImageStream(_processCameraImage);
     } catch (e) {
       if (!mounted) return;
@@ -101,9 +248,8 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
     }
   }
 
-  // Xử lý từng frame hình từ camera
   Future<void> _processCameraImage(CameraImage image) async {
-    if (_isProcessingFrame || !mounted || _scanStep == 2) return;
+    if (_isProcessingFrame || !mounted || _scanStep == 2 || _use3DFace) return;
     _isProcessingFrame = true;
 
     try {
@@ -120,9 +266,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
         return;
       }
 
-      // ----------------------------------------------------
-      // BƯỚC 0: KIỂM TRA PHÁT HIỆN KHUÔN MẶT BAN ĐẦU
-      // ----------------------------------------------------
       if (_scanStep == 0) {
         if (faces.isEmpty) {
           _faceDetectedFrameCount = 0;
@@ -144,7 +287,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
             });
           }
 
-          // Yêu cầu phát hiện liên tục 3 frames mới bắt đầu chuyển sang Bước 1 (Quét 360 độ)
           if (_faceDetectedFrameCount >= 3) {
             setState(() {
               _scanStep = 1;
@@ -152,11 +294,7 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
             });
           }
         }
-      }
-      // ----------------------------------------------------
-      // BƯỚC 1: XÁC THỰC BẰNG CÁCH XOAY KHUÔN MẶT 360 ĐỘ
-      // ----------------------------------------------------
-      else if (_scanStep == 1) {
+      } else if (_scanStep == 1) {
         if (faces.isEmpty) {
           if (_statusMessage !=
               'Không tìm thấy khuôn mặt.\nVui lòng quay lại khung hình.') {
@@ -167,26 +305,22 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
           }
         } else {
           final face = faces.first;
-          final double yaw = face.headEulerAngleY ?? 0.0; // Quay trái (-), phải (+)
-          final double pitch = face.headEulerAngleX ?? 0.0; // Cúi xuống (-), ngẩng lên (+)
+          final double yaw = face.headEulerAngleY ?? 0.0;
+          final double pitch = face.headEulerAngleX ?? 0.0;
 
           final double dx = yaw;
           final double dy = pitch;
           final double magnitude = sqrt(dx * dx + dy * dy);
 
-          // Ngưỡng phát hiện độ nghiêng/xoay của đầu (>= 5 độ)
           if (magnitude >= 5.0) {
-            // Tính góc hướng đầu theo radian từ vị trí 12 giờ theo chiều kim đồng hồ
             double angleRad = atan2(yaw, pitch);
             if (angleRad < 0) {
               angleRad += 2 * pi;
             }
 
-            // Quy đổi góc sang vạch tương ứng (0 -> 63)
             int centerTick = ((angleRad / (2 * pi)) * 64).round() % 64;
-
             bool updated = false;
-            // Đánh dấu các vạch xung quanh góc quay (độ phủ 5 vạch)
+
             for (int offset = -2; offset <= 2; offset++) {
               int tIndex = (centerTick + offset + 64) % 64;
               if (!_completedTicks[tIndex]) {
@@ -212,18 +346,8 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
               });
 
               if (_scanProgress >= 1.0) {
-                _onScanComplete();
+                _on2DScanComplete();
               }
-            }
-          } else {
-            int percentage = (_scanProgress * 100).round();
-            String prompt = percentage == 0
-                ? 'Hãy xoay chậm đầu của bạn theo hình tròn 360°'
-                : 'Tiếp tục xoay đầu theo hình tròn ($percentage%)';
-            if (_statusMessage != prompt) {
-              setState(() {
-                _statusMessage = prompt;
-              });
             }
           }
         }
@@ -235,7 +359,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
     }
   }
 
-  // Chuyển đổi CameraImage thành InputImage cho ML Kit
   InputImage? _convertCameraImage(CameraImage image) {
     if (_cameraController == null) return null;
 
@@ -247,7 +370,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
       final bytes = allBytes.done().buffer.asUint8List();
 
       final imageSize = Size(image.width.toDouble(), image.height.toDouble());
-
       final camera = _cameraController!.description;
       final sensorOrientation = camera.sensorOrientation;
 
@@ -294,7 +416,7 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
     }
   }
 
-  Future<void> _onScanComplete() async {
+  Future<void> _on2DScanComplete() async {
     try {
       await _cameraController?.stopImageStream();
     } catch (e) {
@@ -312,6 +434,10 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
 
   @override
   void dispose() {
+    _face3dSub?.cancel();
+    if (_use3DFace) {
+      Face3DService.stopSession();
+    }
     try {
       _cameraController?.stopImageStream();
     } catch (_) {}
@@ -327,7 +453,7 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Thanh điều hướng trên
+            // Top Navigation Bar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               child: Row(
@@ -345,41 +471,28 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
                       ),
                     ),
                   ),
+                  if (_use3DFace)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF007AFF).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        '3D TrueDepth',
+                        style: TextStyle(color: Color(0xFF007AFF), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
                 ],
               ),
             ),
 
-            // Nội dung chính
+            // Main Content Area
             Expanded(
               child: _buildBodyContent(),
             ),
 
-            // Nút tùy chọn trợ năng (khi đang quét)
-            if (_scanStep == 1)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 24.0, top: 8.0),
-                child: TextButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Chức năng trợ năng cho Face ID'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
-                  child: const Text(
-                    'Tùy chọn Trợ năng',
-                    style: TextStyle(
-                      color: Color(0xFF007AFF),
-                      fontSize: 17,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: -0.2,
-                    ),
-                  ),
-                ),
-              ),
-
-            // Nút Hoàn tất
+            // Completion Button
             if (_scanStep == 2)
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
@@ -418,8 +531,7 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
   }
 
   Widget _buildBodyContent() {
-    if (_scanStep == 0) {
-      // Bước 0: Định vị & Kiểm tra nhận diện khuôn mặt
+    if (_scanStep == 0 && !_use3DFace) {
       return Column(
         children: [
           Expanded(
@@ -501,20 +613,17 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
           ),
         ],
       );
-    } else if (_scanStep == 1) {
-      // Bước 1: Quét xoay khuôn mặt 360 độ (64 vạch)
+    } else if (_scanStep == 1 || (_use3DFace && _scanStep == 0)) {
       return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const Spacer(),
-          // Container 300x300 chứa 64 vạch tròn và xem camera
           SizedBox(
             width: 300,
             height: 300,
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Vẽ 64 vạch tròn theo tiến trình xoay mặt
                 CustomPaint(
                   size: const Size(300, 300),
                   painter: _FaceId64TicksPainter(
@@ -522,7 +631,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
                     progress: _scanProgress,
                   ),
                 ),
-                // Ô xem camera hình tròn 216x216
                 Container(
                   width: 216,
                   height: 216,
@@ -531,21 +639,32 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
                     border: Border.all(color: Colors.black, width: 1.5),
                   ),
                   child: ClipOval(
-                    child: _isCameraInitialized && _cameraController != null
-                        ? OverflowBox(
-                            alignment: Alignment.center,
-                            child: FittedBox(
-                              fit: BoxFit.cover,
-                              child: SizedBox(
-                                width: _cameraController!
-                                    .value.previewSize!.height,
-                                height: _cameraController!
-                                    .value.previewSize!.width,
-                                child: CameraPreview(_cameraController!),
+                    child: _use3DFace
+                        ? Container(
+                            color: const Color(0xFF1C1C1E),
+                            child: const Center(
+                              child: Icon(
+                                Icons.face_retouching_natural,
+                                color: Color(0xFF007AFF),
+                                size: 80,
                               ),
                             ),
                           )
-                        : Container(color: Colors.black),
+                        : (_isCameraInitialized && _cameraController != null
+                            ? OverflowBox(
+                                alignment: Alignment.center,
+                                child: FittedBox(
+                                  fit: BoxFit.cover,
+                                  child: SizedBox(
+                                    width: _cameraController!
+                                        .value.previewSize!.height,
+                                    height: _cameraController!
+                                        .value.previewSize!.width,
+                                    child: CameraPreview(_cameraController!),
+                                  ),
+                                ),
+                              )
+                            : Container(color: Colors.black)),
                   ),
                 ),
               ],
@@ -554,7 +673,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
 
           const SizedBox(height: 48),
 
-          // Hướng dẫn người dùng xoay đầu
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 340),
             child: Text(
@@ -573,7 +691,6 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
         ],
       );
     } else {
-      // Bước 2: Thành công / Completed
       return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -602,16 +719,14 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 320),
-            child: const Text(
-              'Xác thực Face ID đã được thiết lập thành công.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Color(0xFFEBEBF5),
-                fontSize: 16.5,
-                height: 1.4,
-              ),
+          Text(
+            _use3DFace
+                ? 'Dữ liệu khuôn mặt 3D đã được đăng ký thành công.'
+                : 'Face ID hiện đã được thiết lập thành công.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFFEBEBF5),
+              fontSize: 17,
             ),
           ),
           const Spacer(),
@@ -621,11 +736,90 @@ class _FaceIdScanningScreenState extends State<FaceIdScanningScreen> {
   }
 }
 
+class _ReticleOverlay extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _ReticleOverlay({
+    required this.size,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _ReticlePainter(color: color),
+      ),
+    );
+  }
+}
+
+class _ReticlePainter extends CustomPainter {
+  final Color color;
+
+  _ReticlePainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 3.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final double cornerLength = 32.0;
+
+    // Top-Left corner
+    canvas.drawPath(
+      Path()
+        ..moveTo(0, cornerLength)
+        ..lineTo(0, 0)
+        ..lineTo(cornerLength, 0),
+      paint,
+    );
+
+    // Top-Right corner
+    canvas.drawPath(
+      Path()
+        ..moveTo(size.width - cornerLength, 0)
+        ..lineTo(size.width, 0)
+        ..lineTo(size.width, cornerLength),
+      paint,
+    );
+
+    // Bottom-Left corner
+    canvas.drawPath(
+      Path()
+        ..moveTo(0, size.height - cornerLength)
+        ..lineTo(0, size.height)
+        ..lineTo(cornerLength, size.height),
+      paint,
+    );
+
+    // Bottom-Right corner
+    canvas.drawPath(
+      Path()
+        ..moveTo(size.width - cornerLength, size.height)
+        ..lineTo(size.width, size.height)
+        ..lineTo(size.width, size.height - cornerLength),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ReticlePainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+}
+
 class _FaceId64TicksPainter extends CustomPainter {
   final List<bool> completedTicks;
   final double progress;
 
-  const _FaceId64TicksPainter({
+  _FaceId64TicksPainter({
     required this.completedTicks,
     required this.progress,
   });
@@ -635,22 +829,20 @@ class _FaceId64TicksPainter extends CustomPainter {
     final double cx = size.width / 2;
     final double cy = size.height / 2;
     final double outerRadius = (size.width / 2) - 8;
-    final double innerRadius = outerRadius - 14;
+    final double innerRadius = outerRadius - 16;
 
     const int totalTicks = 64;
     const double angleStep = (2 * pi) / totalTicks;
 
-    final Paint inactivePaint = Paint()
-      ..color = const Color(0x59D1D5DB)
-      ..strokeWidth = 3.5
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
+    final Paint defaultPaint = Paint()
+      ..color = const Color(0xFF3A3A3C)
+      ..strokeWidth = 3.0
+      ..strokeCap = StrokeCap.round;
 
     final Paint activePaint = Paint()
-      ..color = const Color(0xFF007AFF)
+      ..color = const Color(0xFF34C759)
       ..strokeWidth = 3.5
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
+      ..strokeCap = StrokeCap.round;
 
     for (int i = 0; i < totalTicks; i++) {
       final double angle = i * angleStep;
@@ -659,11 +851,11 @@ class _FaceId64TicksPainter extends CustomPainter {
       final double dx2 = cx + outerRadius * sin(angle);
       final double dy2 = cy - outerRadius * cos(angle);
 
-      final bool isActive = (i < completedTicks.length && completedTicks[i]);
+      final isCompleted = completedTicks[i];
       canvas.drawLine(
         Offset(dx1, dy1),
         Offset(dx2, dy2),
-        isActive ? activePaint : inactivePaint,
+        isCompleted ? activePaint : defaultPaint,
       );
     }
   }
@@ -672,103 +864,5 @@ class _FaceId64TicksPainter extends CustomPainter {
   bool shouldRepaint(covariant _FaceId64TicksPainter oldDelegate) {
     return oldDelegate.progress != progress ||
         oldDelegate.completedTicks != completedTicks;
-  }
-}
-
-class _ReticleOverlay extends StatelessWidget {
-  final double size;
-  final Color color;
-
-  const _ReticleOverlay({
-    this.size = 260.0,
-    this.color = Colors.white,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const double cornerSize = 44.0;
-    const double strokeWidth = 4.5;
-    const double radius = 24.0;
-
-    return SizedBox(
-      width: size,
-      height: size,
-      child: Stack(
-        children: [
-          // Góc trên bên trái
-          Positioned(
-            top: 0,
-            left: 0,
-            child: Container(
-              width: cornerSize,
-              height: cornerSize,
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: color, width: strokeWidth),
-                  left: BorderSide(color: color, width: strokeWidth),
-                ),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(radius),
-                ),
-              ),
-            ),
-          ),
-          // Góc trên bên phải
-          Positioned(
-            top: 0,
-            right: 0,
-            child: Container(
-              width: cornerSize,
-              height: cornerSize,
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: color, width: strokeWidth),
-                  right: BorderSide(color: color, width: strokeWidth),
-                ),
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(radius),
-                ),
-              ),
-            ),
-          ),
-          // Góc dưới bên trái
-          Positioned(
-            bottom: 0,
-            left: 0,
-            child: Container(
-              width: cornerSize,
-              height: cornerSize,
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: color, width: strokeWidth),
-                  left: BorderSide(color: color, width: strokeWidth),
-                ),
-                borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(radius),
-                ),
-              ),
-            ),
-          ),
-          // Góc dưới bên phải
-          Positioned(
-            bottom: 0,
-            right: 0,
-            child: Container(
-              width: cornerSize,
-              height: cornerSize,
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: color, width: strokeWidth),
-                  right: BorderSide(color: color, width: strokeWidth),
-                ),
-                borderRadius: const BorderRadius.only(
-                  bottomRight: Radius.circular(radius),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

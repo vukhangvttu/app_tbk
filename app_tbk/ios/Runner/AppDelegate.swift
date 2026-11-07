@@ -5,11 +5,17 @@ import MachO
 
 @UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
+    private var face3DTrackingManager: Face3DTrackingManager?
+
     override func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         let controller = window?.rootViewController as! FlutterViewController
+
+        face3DTrackingManager = Face3DTrackingManager()
+        face3DTrackingManager?.register(with: controller.binaryMessenger)
+
         let securityChannel = FlutterMethodChannel(
             name: "com.example.secure_app/security",
             binaryMessenger: controller.binaryMessenger
