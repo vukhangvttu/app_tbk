@@ -75,6 +75,18 @@ class _AppPermissionsScreenState extends State<AppPermissionsScreen>
     }
   }
 
+  Future<void> _requestAllPermissions() async {
+    setState(() => _isLoading = true);
+    try {
+      await [
+        Permission.camera,
+        Permission.location,
+        Permission.notification,
+      ].request();
+    } catch (_) {}
+    await _checkPermissions();
+  }
+
   void _showGoToSettingsDialog() {
     showDialog(
       context: context,
@@ -161,10 +173,30 @@ class _AppPermissionsScreenState extends State<AppPermissionsScreen>
                   onTap: () => _requestPermission(Permission.notification),
                   isDark: isDark,
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
-                  height: 50,
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    onPressed: _requestAllPermissions,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: theme.primaryColor,
+                      side: BorderSide(color: theme.primaryColor),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    icon: const Icon(Icons.touch_app_outlined),
+                    label: const Text(
+                      'Yêu cầu kích hoạt tất cả quyền',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
                   child: ElevatedButton.icon(
                     onPressed: openAppSettings,
                     style: ElevatedButton.styleFrom(
@@ -177,8 +209,8 @@ class _AppPermissionsScreenState extends State<AppPermissionsScreen>
                     ),
                     icon: const Icon(Icons.settings_outlined),
                     label: const Text(
-                      'Mở Cài đặt hệ thống',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      'Mở Cài đặt hệ thống iPhone',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),
@@ -207,9 +239,9 @@ class _AppPermissionsScreenState extends State<AppPermissionsScreen>
           const SizedBox(width: 14),
           Expanded(
             child: Text(
-              'Quản lý các quyền truy cập của ứng dụng. Bạn có thể bật/tắt hoặc điều chỉnh quyền trong cài đặt thiết bị.',
+              'Lưu ý iOS: Camera và Vị trí chỉ tự động xuất hiện trong "Cài đặt iPhone -> App Tbk" sau khi ứng dụng bật pop-up xin quyền ít nhất 1 lần.',
               style: TextStyle(
-                fontSize: 13.5,
+                fontSize: 13.0,
                 height: 1.4,
                 color: isDark ? Colors.grey.shade300 : Colors.blue.shade900,
               ),
