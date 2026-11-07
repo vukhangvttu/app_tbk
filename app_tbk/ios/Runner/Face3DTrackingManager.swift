@@ -31,10 +31,14 @@ class GZipHelper {
                     compressedData.count += chunk
                 }
                 let totalOut = Int(stream.total_out)
+                // Doc count ra bien local TRUOC khi vao withUnsafeMutableBytes:
+                // doc compressedData.count ngay trong closure dang giu mutable
+                // access cua chinh no la loi exclusive-access (Swift 6/Xcode 16)
+                let availOut = compressedData.count - totalOut
                 compressedData.withUnsafeMutableBytes { mutableRawBuffer in
                     guard let destPointer = mutableRawBuffer.baseAddress?.assumingMemoryBound(to: Bytef.self).advanced(by: totalOut) else { return }
                     stream.next_out = destPointer
-                    stream.avail_out = uInt(compressedData.count - totalOut)
+                    stream.avail_out = uInt(availOut)
                 }
                 deflate(&stream, Z_FINISH)
             } while stream.avail_out == 0
